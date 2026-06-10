@@ -1,0 +1,40 @@
+# ─────────────────────────────────────────────────────────────────────
+# WB Spy — два сервиса из одного образа:
+#   web    — FastAPI (:8000), API + PWA, ходит за nginx (proxy net)
+#   worker — collector loop + Telegram-бот (если задан TG_BOT_TOKEN)
+# Общий SQLite на volume wbspy-data (/data/wb.sqlite3, WAL).
+# Запуск:  docker compose -p wbspy up -d --build
+# ─────────────────────────────────────────────────────────────────────
+services:
+  web:
+    build: .
+    image: wb-spy:latest
+    container_name: wbspy-web
+    restart: unless-stopped
+    command: ["uvicorn", "wbp.web:app", "--host", "0.0.0.0", "--port", "8000"]
+    env_file: [.env]
+    environment:
+      DB_PATH: /data/wb.sqlite3
+    volumes:
+      - wbspy-data:/data
+    networks: [proxy]
+
+  worker:
+    image: wb-spy:latest        # переиспользует образ, собранный сервисом web
+    container_name: wbspy-worker
+    restart: unless-stopped
+    command: ["python", "-m", "wbp.cli", "loop"]
+    env_file: [.env]
+    environment:
+      DB_PATH: /data/wb.sqlite3
+    volumes:
+      - wbspy-data:/data
+    networks: [proxy]
+    depends_on: [web]
+
+networks:
+  proxy:
+    external: true
+
+volumes:
+  wbspy-data:

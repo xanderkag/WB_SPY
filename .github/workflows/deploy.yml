@@ -1,0 +1,114 @@
+# ─────────────────────────────────────────────────────────────────────
+# Deploy WB Spy на Asha (135.106.158.143).
+#
+# Обходит блокировку «ноут → РФ-IP»: код едет на раннер GitHub
+# (actions/checkout) → rsync по SSH на Asha → сборка Docker на сервере.
+#
+# Secrets (Settings → Secrets репозитория WB_SPY):
+#   SSH_PRIVATE_KEY_ASHA — тот же Asha-ключ, что у SLAI (public уже в
+#                          /root/.ssh/authorized_keys на сервере).
+#   TG_BOT_TOKEN         — токен Telegram-бота (если пуст — worker крутит
+#                          только коллектор, без бота).
+#   TG_ADMIN_IDS         — (опц.) id админов через запятую.
+#
+# WB банит ДЦ-IP: коллектор соберёт данные только когда в .env появится
+# PROXY_URL (socks5/http) и USE_CURL_CFFI=1. Сейчас деплоим веб + бот.
+# ─────────────────────────────────────────────────────────────────────
+name: deploy-wbspy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-wbspy
+  cancel-in-progress: false
+
+env:
+  HOST: 135.106.158.143
+  REMOTE_DIR: /opt/projects/wb-spy
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH key
+        env:
+          KEY: ${{ secrets.SSH_PRIVATE_KEY_ASHA }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/asha
+          chmod 600 ~/.ssh/asha
+          ssh-keyscan -p 22 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Generate .env from secrets
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_ADMIN_IDS: ${{ secrets.TG_ADMIN_IDS }}
+        run: |
+          cat > .env <<EOF
+          TG_BOT_TOKEN=${TG_BOT_TOKEN}
+          TG_ADMIN_IDS=${TG_ADMIN_IDS}
+          WB_DEST=-1257786
+          DB_PATH=/data/wb.sqlite3
+          POLL_INTERVAL_SECONDS=1800
+          USE_CURL_CFFI=0
+          USE_PLAYWRIGHT=0
+          PROXY_URL=
+          DROP_THRESHOLD_PCT=10
+          DROP_WINDOW_HOURS=24
+          DROP_DEDUP_HOURS=6
+          DROP_MIN_POINTS=6
+          EOF
+          echo "✓ .env собран (TG_BOT_TOKEN ${TG_BOT_TOKEN:+задан}${TG_BOT_TOKEN:-ПУСТ — бот выключен})"
+
+      - name: Rsync source + .env → server
+        run: |
+          rsync -az --delete \
+            --exclude '.git' --exclude '.github' --exclude '.venv' --exclude 'venv' \
+            --exclude '__pycache__' --exclude '*.sqlite3*' --exclude '*.log' \
+            -e "ssh -i ~/.ssh/asha -o StrictHostKeyChecking=accept-new -p 22" \
+            ./ root@"$HOST":"$REMOTE_DIR"/
+
+      - name: Build & up on server
+        run: |
+          ssh -i ~/.ssh/asha -o StrictHostKeyChecking=accept-new -p 22 root@"$HOST" \
+            "REMOTE_DIR='$REMOTE_DIR' bash -se" <<'REMOTE'
+          set -e
+          cd "$REMOTE_DIR"
+          echo "=== build web image ==="
+          docker compose -p wbspy build web
+          echo "=== up (web + worker) ==="
+          docker compose -p wbspy up -d
+          echo "=== статусы ==="
+          for c in wbspy-web wbspy-worker; do
+            for i in $(seq 1 20); do
+              ST=$(docker inspect "$c" --format '{{.State.Status}}' 2>/dev/null || echo missing)
+              [ "$ST" = "running" ] && { echo "  $c: running"; break; }
+              sleep 2
+            done
+            ST=$(docker inspect "$c" --format '{{.State.Status}}' 2>/dev/null || echo missing)
+            [ "$ST" = "running" ] || { echo "✗ $c = $ST"; docker logs "$c" --tail 40 2>&1 || true; exit 1; }
+          done
+          echo "=== smoke web:8000 (внутри proxy net) ==="
+          docker run --rm --network proxy curlimages/curl:8.10.1 \
+            -sf -o /dev/null -w "wbspy-web:8000 → HTTP %{http_code}\n" \
+            http://wbspy-web:8000/ || echo "⚠ web smoke не прошёл — смотри логи"
+          echo "=== worker tail (бот/коллектор) ==="
+          docker logs wbspy-worker --tail 15 2>&1 || true
+          echo "✓ deploy OK"
+          REMOTE
+
+      - name: nginx layout diagnostics (read-only)
+        run: |
+          ssh -i ~/.ssh/asha -o StrictHostKeyChecking=accept-new -p 22 root@"$HOST" 'bash -se' <<'REMOTE'
+          set +e
+          NGINX=$(docker ps --format '{{.Names}}' | grep -iE 'nginx|proxy' | head -1)
+          echo "nginx container: ${NGINX:-<none>}"
+          [ -z "$NGINX" ] && exit 0
+          docker inspect "$NGINX" --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'
+          docker exec "$NGINX" sh -c 'ls -la /etc/nginx/conf.d/ 2>/dev/null; echo ---; grep -rhn "server_name" /etc/nginx/conf.d/ 2>/dev/null'
+          REMOTE

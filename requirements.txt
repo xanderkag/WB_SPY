@@ -4,3 +4,10 @@ aiosqlite>=0.20
 pydantic-settings>=2.4
 python-dotenv>=1.0
 loguru>=0.7
+
+# --- web (раздача API + PWA) ---
+fastapi>=0.115
+uvicorn[standard]>=0.30
+
+# --- обход anti-bot (опционально, включается USE_CURL_CFFI=1) ---
+curl_cffi>=0.7
