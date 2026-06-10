@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0f172a"/>
+      <stop offset="100%" stop-color="#0b1530"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#38bdf8"/>
+      <stop offset="100%" stop-color="#0ea5e9"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="112" fill="url(#bg)"/>
+  <!-- спадающий график -->
+  <polyline points="80,140 180,200 280,170 380,310 440,400"
+            fill="none" stroke="url(#line)" stroke-width="32"
+            stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- стрелка вниз -->
+  <path d="M408,360 L440,400 L470,360 Z" fill="#0ea5e9"/>
+  <!-- буквы WB -->
+  <text x="80" y="470" font-family="-apple-system, SF Pro Text, Inter, sans-serif"
+        font-size="80" font-weight="800" fill="#e6e8ee"
+        letter-spacing="-2">WB</text>
+</svg>

@@ -1,0 +1,781 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<meta name="theme-color" content="#0b0f1a" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="WB Watch" />
+<title>WB Watch</title>
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="icon" type="image/svg+xml" href="/static/icon.svg" />
+<link rel="apple-touch-icon" href="/static/icon.svg" />
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  html, body { background:#0b0f1a; color:#e6e8ee; -webkit-tap-highlight-color: transparent; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif; }
+  .safe-bottom { padding-bottom: calc(env(safe-area-inset-bottom) + 72px); }
+  .safe-top    { padding-top:    env(safe-area-inset-top); }
+  .card { background:#141a2b; border:1px solid #1f2940; }
+  .skel { background: linear-gradient(90deg,#1a2238 0%, #243054 50%, #1a2238 100%); background-size:200% 100%; animation: sk 1.2s linear infinite; }
+  @keyframes sk { 0%{background-position:200% 0} 100%{background-position:-200% 0} }
+  .chip { background:#1f2940; }
+  .chip-active { background:#2563eb; color:white; }
+  .tab-active { color:#60a5fa; }
+  .scroll-x { scrollbar-width:none; }
+  .scroll-x::-webkit-scrollbar { display:none; }
+  details > summary { list-style:none; }
+  details > summary::-webkit-details-marker { display:none; }
+  /* toast */
+  .toast-enter { transform: translateY(-120%); opacity:0; }
+  .toast-shown { transform: translateY(0); opacity:1; transition: all 0.4s cubic-bezier(.2,.8,.2,1); }
+  /* пульсация значка дропа */
+  @keyframes pulse-red {
+    0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.4); }
+    50% { box-shadow: 0 0 0 8px rgba(239,68,68,0); }
+  }
+  .alert-fresh { animation: pulse-red 1.4s ease-out 2; }
+</style>
+</head>
+<body class="min-h-screen">
+
+<!-- TOAST CONTAINER -->
+<div id="toasts" class="fixed left-0 right-0 z-50 px-3 flex flex-col items-stretch gap-2 pointer-events-none"
+     style="top: calc(env(safe-area-inset-top) + 8px);"></div>
+
+<!-- HEADER -->
+<header class="safe-top sticky top-0 z-30 backdrop-blur bg-slate-950/70 border-b border-slate-800">
+  <div class="px-4 py-3 flex items-center justify-between">
+    <div>
+      <div class="text-[11px] uppercase tracking-widest text-slate-400">WB Watch</div>
+      <div id="hdr-title" class="text-lg font-semibold">Дропы</div>
+    </div>
+    <div class="text-right">
+      <div id="hdr-status" class="text-[11px] text-slate-400">—</div>
+      <button id="refresh-btn" class="text-xs text-sky-400 mt-0.5">обновить</button>
+    </div>
+  </div>
+</header>
+
+<!-- VIEWS -->
+<main class="px-4 pt-4 safe-bottom max-w-3xl mx-auto">
+
+  <!-- VIEW: ALERTS -->
+  <section id="view-alerts" class="space-y-3">
+    <div id="alerts-empty" class="hidden card rounded-2xl p-6 text-center text-slate-400 text-sm">
+      <div class="text-3xl mb-2">📉</div>
+      Пока дропов нет — детектор копит историю.
+      Алёрт сработает когда цена упадёт ≥10% от медианы 24ч.
+    </div>
+    <div id="alerts-list" class="space-y-3"></div>
+  </section>
+
+  <!-- VIEW: CATALOG -->
+  <section id="view-catalog" class="hidden space-y-4">
+    <input id="search-input" type="search" placeholder="Поиск по названию…"
+           class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm placeholder-slate-500 focus:outline-none focus:border-sky-500" />
+    <div class="flex gap-2 overflow-x-auto scroll-x -mx-4 px-4 pb-1">
+      <button data-sort="biggest_drop" class="sort-btn whitespace-nowrap text-xs px-3 py-1.5 rounded-full chip">Дроп 24ч</button>
+      <button data-sort="price_desc" class="sort-btn whitespace-nowrap text-xs px-3 py-1.5 rounded-full chip chip-active">Дорогие</button>
+      <button data-sort="price_asc" class="sort-btn whitespace-nowrap text-xs px-3 py-1.5 rounded-full chip">Дешёвые</button>
+      <button data-sort="newest" class="sort-btn whitespace-nowrap text-xs px-3 py-1.5 rounded-full chip">Свежие</button>
+      <button data-sort="name" class="sort-btn whitespace-nowrap text-xs px-3 py-1.5 rounded-full chip">По имени</button>
+    </div>
+    <div id="catalog-list" class="space-y-3"></div>
+  </section>
+
+  <!-- VIEW: WATCH (избранное) -->
+  <section id="view-watch" class="hidden space-y-3">
+    <div id="watch-empty" class="hidden card rounded-2xl p-6 text-center text-slate-400 text-sm">
+      <div class="text-3xl mb-2">★</div>
+      Здесь пусто. Тапни звёздочку на товаре в каталоге — он появится тут.
+    </div>
+    <div id="watch-list" class="space-y-3"></div>
+  </section>
+
+  <!-- VIEW: STATS -->
+  <section id="view-stats" class="hidden space-y-4">
+    <div class="grid grid-cols-2 gap-3">
+      <div class="card rounded-2xl p-4">
+        <div class="text-[11px] uppercase tracking-wider text-slate-400">Товаров</div>
+        <div id="st-prods" class="text-3xl font-semibold mt-1">—</div>
+      </div>
+      <div class="card rounded-2xl p-4">
+        <div class="text-[11px] uppercase tracking-wider text-slate-400">Снапшотов</div>
+        <div id="st-snaps" class="text-3xl font-semibold mt-1">—</div>
+      </div>
+      <div class="card rounded-2xl p-4">
+        <div class="text-[11px] uppercase tracking-wider text-slate-400">Алёртов</div>
+        <div id="st-alerts" class="text-3xl font-semibold mt-1">—</div>
+      </div>
+      <div class="card rounded-2xl p-4">
+        <div class="text-[11px] uppercase tracking-wider text-slate-400">Подписчиков</div>
+        <div id="st-subs" class="text-3xl font-semibold mt-1">—</div>
+      </div>
+    </div>
+
+    <div class="card rounded-2xl p-4">
+      <div class="text-[11px] uppercase tracking-wider text-slate-400 mb-3">Последний тик</div>
+      <div id="st-last" class="text-base">—</div>
+      <div id="st-first" class="text-xs text-slate-400 mt-1">—</div>
+    </div>
+
+    <div class="card rounded-2xl p-4">
+      <div class="text-[11px] uppercase tracking-wider text-slate-400 mb-3">По продавцам</div>
+      <div id="st-suppliers" class="space-y-2 text-sm"></div>
+    </div>
+
+    <div class="card rounded-2xl p-4 space-y-3">
+      <div class="flex items-center justify-between">
+        <div class="text-[11px] uppercase tracking-wider text-slate-400">Мониторим продавцов</div>
+        <button id="sup-add-btn" class="text-xs text-sky-400">+ добавить</button>
+      </div>
+      <div id="sup-form" class="hidden space-y-2">
+        <input id="sup-input-id" inputmode="numeric" placeholder="supplierId (число из /seller/...)"
+               class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm" />
+        <input id="sup-input-alias" placeholder="как назвать (необязательно)"
+               class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm" />
+        <div class="flex gap-2">
+          <button id="sup-save-btn" class="flex-1 bg-sky-500 text-slate-950 font-medium rounded-xl py-2 text-sm">Добавить</button>
+          <button id="sup-cancel-btn" class="bg-slate-800 text-slate-300 rounded-xl py-2 px-4 text-sm">Отмена</button>
+        </div>
+      </div>
+      <div id="sup-list" class="space-y-2 text-sm"></div>
+      <div class="text-[10px] text-slate-500">Изменения подхватятся со следующего тика парсера (≤30 мин).</div>
+    </div>
+  </section>
+</main>
+
+<!-- BOTTOM TAB BAR -->
+<nav class="fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 backdrop-blur border-t border-slate-800"
+     style="padding-bottom: env(safe-area-inset-bottom);">
+  <div class="max-w-3xl mx-auto grid grid-cols-4">
+    <button class="tab py-3 text-[10px] uppercase tracking-widest tab-active" data-view="alerts">
+      <div class="text-xl leading-none">📉</div>
+      <div class="mt-1">Дропы</div>
+    </button>
+    <button class="tab py-3 text-[10px] uppercase tracking-widest text-slate-400" data-view="catalog">
+      <div class="text-xl leading-none">📦</div>
+      <div class="mt-1">Каталог</div>
+    </button>
+    <button class="tab py-3 text-[10px] uppercase tracking-widest text-slate-400" data-view="watch">
+      <div class="text-xl leading-none">★</div>
+      <div class="mt-1">Мои</div>
+    </button>
+    <button class="tab py-3 text-[10px] uppercase tracking-widest text-slate-400" data-view="stats">
+      <div class="text-xl leading-none">📊</div>
+      <div class="mt-1">Статус</div>
+    </button>
+  </div>
+</nav>
+
+<!-- DETAIL MODAL -->
+<div id="modal" class="hidden fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm" onclick="if(event.target.id==='modal') closeModal()">
+  <div class="absolute inset-x-0 bottom-0 top-12 bg-slate-900 rounded-t-3xl border-t border-slate-700 overflow-y-auto"
+       style="padding-bottom: env(safe-area-inset-bottom);">
+    <div class="sticky top-0 bg-slate-900/90 backdrop-blur px-4 py-3 border-b border-slate-800 flex items-center justify-between">
+      <div id="m-title" class="text-sm font-medium truncate pr-4">—</div>
+      <button onclick="closeModal()" class="text-sky-400 text-sm shrink-0">Закрыть</button>
+    </div>
+    <div class="p-4 space-y-4">
+      <img id="m-img" class="w-full aspect-square object-contain bg-slate-800 rounded-2xl" onerror="imgFallback(this)" />
+      <div>
+        <div class="text-xs text-slate-400" id="m-brand">—</div>
+        <div class="text-base mt-1" id="m-name">—</div>
+      </div>
+      <div class="card rounded-2xl p-4">
+        <div class="flex items-end gap-4">
+          <div>
+            <div class="text-[11px] uppercase tracking-wider text-slate-400">Сейчас</div>
+            <div class="text-3xl font-semibold mt-1" id="m-price">—</div>
+          </div>
+          <div id="m-delta" class="text-sm pb-1">—</div>
+        </div>
+        <div class="text-xs text-slate-400 mt-2" id="m-range">—</div>
+      </div>
+      <div class="card rounded-2xl p-4">
+        <div class="text-[11px] uppercase tracking-wider text-slate-400 mb-2">История цен</div>
+        <div id="m-chart" class="text-slate-500 text-sm">—</div>
+      </div>
+      <div class="card rounded-2xl p-4 space-y-2">
+        <div class="flex items-center justify-between">
+          <div class="text-[11px] uppercase tracking-wider text-slate-400">🎯 Цель — уведомить при цене ниже</div>
+          <button id="m-target-clear" class="hidden text-xs text-red-400">снять</button>
+        </div>
+        <div class="flex gap-2">
+          <input id="m-target-input" inputmode="numeric" placeholder="например 320000"
+                 class="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm" />
+          <button id="m-target-save" class="bg-amber-400 text-slate-950 font-medium rounded-xl px-4 text-sm">Поставить</button>
+        </div>
+        <div id="m-target-status" class="text-xs text-slate-500"></div>
+      </div>
+      <a id="m-link" target="_blank"
+         class="block text-center bg-sky-500 hover:bg-sky-400 text-slate-950 font-medium rounded-2xl py-3">
+        Открыть на Wildberries →
+      </a>
+    </div>
+  </div>
+</div>
+
+<script>
+const fmt = n => (n==null?'—':n.toLocaleString('ru-RU',{maximumFractionDigits:0})+' ₽');
+const ago = ts => {
+  if(!ts) return '—';
+  const d = Math.max(0, Date.now()/1000 - ts);
+  if (d<60) return Math.round(d)+' сек назад';
+  if (d<3600) return Math.round(d/60)+' мин назад';
+  if (d<86400) return Math.round(d/3600)+' ч назад';
+  return Math.round(d/86400)+' дн назад';
+};
+const dt = ts => ts ? new Date(ts*1000).toLocaleString('ru-RU') : '—';
+
+let currentView = 'alerts';
+let currentSort = 'price_desc';
+let sortDir = 'desc';      // direction для текущего сорта (используется при тоггле)
+let lastAlertId = parseInt(localStorage.getItem('lastAlertId') || '0', 10);
+
+// регистрируем service worker (PWA)
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(e => console.log('SW reg fail:', e));
+  });
+}
+
+function setView(v) {
+  currentView = v;
+  document.querySelectorAll('section[id^="view-"]').forEach(s => s.classList.add('hidden'));
+  document.getElementById('view-'+v).classList.remove('hidden');
+  document.querySelectorAll('.tab').forEach(t => {
+    t.classList.toggle('tab-active', t.dataset.view === v);
+    t.classList.toggle('text-slate-400', t.dataset.view !== v);
+  });
+  const titles = {alerts:'Дропы', catalog:'Каталог', watch:'★ Мои', stats:'Статус'};
+  document.getElementById('hdr-title').textContent = titles[v];
+  refresh();
+}
+
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => setView(t.dataset.view)));
+document.getElementById('refresh-btn').addEventListener('click', refresh);
+document.querySelectorAll('.sort-btn').forEach(b => b.addEventListener('click', () => {
+  if (b.dataset.sort === currentSort) {
+    // тап по активному чипу — переворачиваем направление
+    sortDir = (sortDir === 'desc') ? 'asc' : 'desc';
+  } else {
+    currentSort = b.dataset.sort;
+    // дефолтное направление для каждого сорта
+    sortDir = (currentSort === 'price_asc') ? 'asc' : 'desc';
+  }
+  document.querySelectorAll('.sort-btn').forEach(x => {
+    x.classList.toggle('chip-active', x.dataset.sort === currentSort);
+    // показываем стрелочку только у активного
+    const base = x.dataset.label || x.textContent.replace(/[↑↓]\s*$/,'').trim();
+    x.dataset.label = base;
+    x.textContent = (x.dataset.sort === currentSort)
+      ? `${base} ${sortDir === 'asc' ? '↑' : '↓'}`
+      : base;
+  });
+  loadCatalog();
+}));
+document.getElementById('search-input').addEventListener('input', debounce(loadCatalog, 300));
+
+function debounce(fn, ms) {
+  let t; return (...a) => { clearTimeout(t); t=setTimeout(()=>fn(...a), ms); };
+}
+
+async function refresh() {
+  loadStatusHeader();
+  if (currentView === 'alerts') return loadAlerts();
+  if (currentView === 'catalog') return loadCatalog();
+  if (currentView === 'watch')   return loadWatchlist();
+  if (currentView === 'stats')   { loadStats(); loadSuppliers(); return; }
+}
+
+async function loadStatusHeader() {
+  try {
+    const s = await (await fetch('/api/stats')).json();
+    const last = s.last_tick_ts ? ago(s.last_tick_ts) : 'нет данных';
+    document.getElementById('hdr-status').textContent = `${s.products} тов · обнов: ${last}`;
+  } catch(e) { document.getElementById('hdr-status').textContent = 'оффлайн'; }
+}
+
+function pricePill(drop) {
+  if (drop == null) return '<span class="text-xs text-slate-500">—</span>';
+  if (drop >= 10) return `<span class="text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-red-300">−${drop}%</span>`;
+  if (drop > 0) return `<span class="text-xs px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-300">−${drop}%</span>`;
+  if (drop < 0) return `<span class="text-xs px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">+${-drop}%</span>`;
+  return `<span class="text-xs px-2 py-0.5 rounded-full bg-slate-700 text-slate-300">0%</span>`;
+}
+
+// «Лучшая цена за период» — приоритетный бейдж (вместо обычного pill).
+function bestPill(p) {
+  const last = p.last_price;
+  if (last == null) return '';
+  // целевая цена побита
+  if (p.target_price != null && last <= p.target_price) {
+    return `<span class="text-xs px-2 py-0.5 rounded-full bg-amber-400/20 text-amber-200 font-semibold">🎯 цель!</span>`;
+  }
+  if (p.min_all != null && last <= p.min_all && p.days_tracked >= 3) {
+    return `<span class="text-xs px-2 py-0.5 rounded-full bg-fuchsia-500/20 text-fuchsia-300 font-semibold">🔥 минимум за ${p.days_tracked}д</span>`;
+  }
+  if (p.min_30d != null && last <= p.min_30d && p.days_tracked >= 3) {
+    return `<span class="text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-red-300">📉 минимум за 30д</span>`;
+  }
+  return '';
+}
+
+function targetIndicator(p) {
+  if (p.target_price == null) return '';
+  // % разница до цели
+  const diff = (p.last_price - p.target_price) / p.target_price * 100;
+  const close = Math.abs(diff) <= 5;
+  const color = close ? 'text-amber-300' : 'text-slate-500';
+  return `<span class="text-[10px] ${color}">🎯 ${fmt(p.target_price)}</span>`;
+}
+
+function imgTag(item, cls) {
+  const urls = item.img_urls || [item.img];
+  const data = JSON.stringify(urls).replace(/"/g, '&quot;');
+  const brand = (item.brand || '?').slice(0, 6);
+  return `<div class="${cls} relative overflow-hidden bg-slate-800">
+    <div class="absolute inset-0 flex items-center justify-center text-slate-500 text-[10px] uppercase tracking-wider font-semibold select-none">${escape(brand)}</div>
+    <img data-imgs="${data}" data-i="0"
+         class="absolute inset-0 w-full h-full object-contain" />
+  </div>`;
+}
+
+function startImgs(root) {
+  (root || document).querySelectorAll('img[data-imgs]:not([data-started])').forEach(img => {
+    img.setAttribute('data-started', '1');
+    try {
+      const urls = JSON.parse((img.getAttribute('data-imgs')||'[]').replace(/&quot;/g,'"'));
+      if (urls.length) _imgStart(img, urls, 0);
+    } catch(e) { img.style.display = 'none'; }
+  });
+}
+
+function miniSpark(prices) {
+  if (!prices || prices.length < 2) return '';
+  const W = 64, H = 24;
+  const min = Math.min(...prices), max = Math.max(...prices);
+  const range = max === min ? 1 : (max - min);
+  const step = (W - 2) / (prices.length - 1);
+  const pts = prices.map((p, i) => [
+    1 + i * step,
+    H - 1 - ((p - min) / range) * (H - 2),
+  ]);
+  const path = pts.map((pt, i) => (i ? 'L' : 'M') + pt[0].toFixed(1) + ',' + pt[1].toFixed(1)).join(' ');
+  // цвет: красный если последняя точка ниже первой, иначе зелёный
+  const stroke = prices[prices.length - 1] < prices[0] ? '#f87171' : '#34d399';
+  return `<svg viewBox="0 0 ${W} ${H}" class="w-16 h-6 shrink-0" preserveAspectRatio="none">
+    <path d="${path}" fill="none" stroke="${stroke}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>`;
+}
+
+function starBtn(nm, watched) {
+  const cls = watched ? 'text-amber-300' : 'text-slate-600';
+  const fill = watched ? '★' : '☆';
+  return `<button onclick="event.stopPropagation();toggleWatch(${nm},this)"
+                  class="star-btn shrink-0 text-2xl leading-none ${cls} active:scale-90 transition">${fill}</button>`;
+}
+
+function productCard(p) {
+  const best = bestPill(p);
+  const fallbackPill = best ? '' : pricePill(p.drop_pct_24h);
+  return `
+    <div onclick="openDetail(${p.nm_id})" class="card rounded-2xl p-3 flex gap-3 active:scale-[0.98] transition cursor-pointer">
+      ${imgTag(p, 'w-20 h-20 rounded-xl bg-slate-800 object-contain shrink-0')}
+      <div class="flex-1 min-w-0">
+        <div class="flex items-start justify-between gap-2">
+          <div class="text-[11px] text-slate-400 truncate">${escape(p.brand||'')}</div>
+          ${starBtn(p.nm_id, !!p.watched)}
+        </div>
+        <div class="text-sm font-medium leading-snug line-clamp-2 mt-0.5">${escape(p.name||'')}</div>
+        <div class="flex items-center gap-2 mt-2 flex-wrap">
+          <div class="text-base font-semibold">${fmt(p.last_price)}</div>
+          ${best || fallbackPill}
+          ${targetIndicator(p)}
+          <div class="ml-auto opacity-80">${miniSpark(p.spark)}</div>
+        </div>
+      </div>
+    </div>`;
+}
+
+window.toggleWatch = async function(nm, btn) {
+  // оптимистичная UI-смена сразу, потом запрос на сервер
+  const watched = btn.textContent === '★';
+  if (watched) {
+    btn.textContent = '☆'; btn.classList.remove('text-amber-300'); btn.classList.add('text-slate-600');
+    await fetch(`/api/watchlist/${nm}`, { method: 'DELETE' });
+  } else {
+    btn.textContent = '★'; btn.classList.add('text-amber-300'); btn.classList.remove('text-slate-600');
+    await fetch('/api/watchlist', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nm_id: nm }),
+    });
+  }
+  if (navigator.vibrate) navigator.vibrate(15);
+};
+
+function alertCard(a) {
+  const isTarget = a.kind === 'target';
+  const badge = isTarget
+    ? `<span class="text-xs px-2 py-0.5 rounded-full bg-amber-400/20 text-amber-200 font-semibold">🎯 цель достигнута</span>`
+    : `<span class="text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-red-300 font-semibold">−${a.drop_pct.toFixed(1)}%</span>`;
+  const refLabel = isTarget ? 'цель' : 'было';
+  return `
+    <div onclick="openDetail(${a.nm_id})" class="card rounded-2xl p-3 flex gap-3 active:scale-[0.98] transition cursor-pointer ${isTarget?'border-amber-400/40':'border-red-500/30'}">
+      ${imgTag(a, 'w-20 h-20 rounded-xl bg-slate-800 object-contain shrink-0')}
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          ${badge}
+          <span class="text-[11px] text-slate-400">${ago(a.ts)}</span>
+        </div>
+        <div class="text-[11px] text-slate-400 mt-1">${escape(a.brand||'')}</div>
+        <div class="text-sm font-medium leading-snug line-clamp-2">${escape(a.name||'')}</div>
+        <div class="flex items-baseline gap-2 mt-1.5">
+          <div class="text-base font-semibold">${fmt(a.current_price)}</div>
+          <div class="text-xs text-slate-500">${refLabel}: <span class="line-through">${fmt(a.median_price)}</span></div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function escape(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// перебираем basket-NN кандидатов, на каждом таймаут 2 сек.
+function _imgAdvance(img) {
+  try {
+    const urls = JSON.parse((img.getAttribute('data-imgs')||'[]').replace(/&quot;/g,'"'));
+    let i = parseInt(img.getAttribute('data-i')||'0', 10) + 1;
+    if (i < urls.length) {
+      img.setAttribute('data-i', i);
+      _imgStart(img, urls, i);
+    } else {
+      img.style.display = 'none';
+      img.onerror = null;
+    }
+  } catch(e) { img.style.display = 'none'; img.onerror = null; }
+}
+function _imgStart(img, urls, i) {
+  // таймер: если за 2.5 сек не успело загрузиться — переходим к следующему
+  const t = setTimeout(() => {
+    if (!img.complete || img.naturalWidth === 0) { img.onerror = null; _imgAdvance(img); }
+  }, 2500);
+  img.onload = () => { clearTimeout(t); /* успех */ };
+  img.onerror = () => { clearTimeout(t); _imgAdvance(img); };
+  img.src = urls[i];
+}
+window.imgFallback = function(img) { _imgAdvance(img); };
+
+async function loadAlerts() {
+  const list = document.getElementById('alerts-list');
+  list.innerHTML = `<div class="card rounded-2xl p-3 flex gap-3"><div class="w-20 h-20 skel rounded-xl"></div><div class="flex-1 space-y-2"><div class="h-3 skel w-1/3 rounded"></div><div class="h-4 skel rounded"></div><div class="h-4 skel w-2/3 rounded"></div></div></div>`.repeat(3);
+  const j = await (await fetch('/api/alerts?limit=50')).json();
+  if (!j.items.length) {
+    list.innerHTML = '';
+    document.getElementById('alerts-empty').classList.remove('hidden');
+    return;
+  }
+  document.getElementById('alerts-empty').classList.add('hidden');
+  list.innerHTML = j.items.map(alertCard).join('');
+  startImgs(list);
+}
+
+async function loadCatalog() {
+  const list = document.getElementById('catalog-list');
+  list.innerHTML = `<div class="card rounded-2xl p-3 flex gap-3"><div class="w-20 h-20 skel rounded-xl"></div><div class="flex-1 space-y-2"><div class="h-3 skel w-1/3 rounded"></div><div class="h-4 skel rounded"></div><div class="h-4 skel w-2/3 rounded"></div></div></div>`.repeat(4);
+  const q = document.getElementById('search-input').value;
+  // если sortDir не дефолтный — перекидываем sort на обратный
+  let effSort = currentSort;
+  if (currentSort === 'price_desc' && sortDir === 'asc') effSort = 'price_asc';
+  else if (currentSort === 'price_asc' && sortDir === 'desc') effSort = 'price_desc';
+  const url = `/api/products?sort=${encodeURIComponent(effSort)}&limit=200` + (q ? `&q=${encodeURIComponent(q)}` : '');
+  const j = await (await fetch(url)).json();
+  if (!j.items.length) {
+    list.innerHTML = `<div class="card rounded-2xl p-6 text-center text-slate-400 text-sm">Ничего не найдено.</div>`;
+    return;
+  }
+  list.innerHTML = j.items.map(productCard).join('');
+  startImgs(list);
+}
+
+async function loadWatchlist() {
+  const list = document.getElementById('watch-list');
+  list.innerHTML = `<div class="card rounded-2xl p-3 flex gap-3"><div class="w-20 h-20 skel rounded-xl"></div><div class="flex-1 space-y-2"><div class="h-3 skel w-1/3 rounded"></div><div class="h-4 skel rounded"></div></div></div>`.repeat(2);
+  const j = await (await fetch('/api/watchlist')).json();
+  if (!j.items.length) {
+    list.innerHTML = '';
+    document.getElementById('watch-empty').classList.remove('hidden');
+    return;
+  }
+  document.getElementById('watch-empty').classList.add('hidden');
+  // карточки watch отличаются только тем что звёздочка всегда заполнена.
+  const items = j.items.map(x => ({ ...x, watched: true }));
+  list.innerHTML = items.map(productCard).join('');
+  startImgs(list);
+}
+
+async function loadSuppliers() {
+  const el = document.getElementById('sup-list');
+  el.innerHTML = '<div class="text-slate-500">загрузка…</div>';
+  const j = await (await fetch('/api/suppliers')).json();
+  if (!j.items.length) {
+    el.innerHTML = '<div class="text-slate-500">пока никого не отслеживаем</div>';
+    return;
+  }
+  el.innerHTML = j.items.map(s => {
+    const label = s.alias || s.detected_name || '—';
+    const onoff = s.active
+      ? '<span class="text-emerald-400">●</span>'
+      : '<span class="text-slate-600">○</span>';
+    return `
+      <div class="flex items-center justify-between gap-2 py-1">
+        <div class="min-w-0">
+          <div class="truncate text-slate-200">${onoff} ${escape(label)} <span class="text-slate-500">#${s.supplier_id}</span></div>
+          <div class="text-[10px] text-slate-500">${s.products_n||0} товаров в БД</div>
+        </div>
+        <div class="flex gap-2 shrink-0">
+          <button onclick="toggleSupplier(${s.id})" class="text-xs text-sky-400">${s.active?'выкл':'вкл'}</button>
+          <button onclick="deleteSupplier(${s.id})" class="text-xs text-red-400">×</button>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+window.toggleSupplier = async function(id) {
+  await fetch(`/api/suppliers/${id}/toggle`, { method: 'POST' });
+  loadSuppliers();
+};
+window.deleteSupplier = async function(id) {
+  if (!confirm('Удалить продавца из мониторинга?')) return;
+  await fetch(`/api/suppliers/${id}`, { method: 'DELETE' });
+  loadSuppliers();
+};
+document.getElementById('sup-add-btn').addEventListener('click', () => {
+  document.getElementById('sup-form').classList.toggle('hidden');
+  document.getElementById('sup-input-id').focus();
+});
+document.getElementById('sup-cancel-btn').addEventListener('click', () => {
+  document.getElementById('sup-form').classList.add('hidden');
+});
+document.getElementById('sup-save-btn').addEventListener('click', async () => {
+  const id = parseInt(document.getElementById('sup-input-id').value, 10);
+  const alias = document.getElementById('sup-input-alias').value.trim();
+  if (!id) { showToast('Нужен числовой supplierId', 'info'); return; }
+  const r = await fetch('/api/suppliers', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ supplier_id: id, alias: alias || null }),
+  });
+  if (r.ok) {
+    showToast(`Добавлен supplier #${id}`, 'info');
+    document.getElementById('sup-input-id').value = '';
+    document.getElementById('sup-input-alias').value = '';
+    document.getElementById('sup-form').classList.add('hidden');
+    loadSuppliers();
+  } else {
+    showToast('Не удалось добавить (возможно, уже есть)', 'info');
+  }
+});
+
+async function loadStats() {
+  const s = await (await fetch('/api/stats')).json();
+  document.getElementById('st-prods').textContent = s.products;
+  document.getElementById('st-snaps').textContent = s.snapshots;
+  document.getElementById('st-alerts').textContent = s.alerts;
+  document.getElementById('st-subs').textContent = s.subscribers;
+  document.getElementById('st-last').textContent = s.last_tick_ts ? `${dt(s.last_tick_ts)} (${ago(s.last_tick_ts)})` : 'нет данных';
+  document.getElementById('st-first').textContent = s.first_tick_ts ? `Парсинг с ${dt(s.first_tick_ts)}` : '';
+  document.getElementById('st-suppliers').innerHTML = (s.by_supplier||[]).map(r =>
+    `<div class="flex justify-between"><span class="text-slate-300">${escape(r.supplier_name||'—')} <span class="text-slate-500">#${r.supplier_id}</span></span><span class="text-slate-400">${r.n}</span></div>`
+  ).join('') || '<div class="text-slate-500">—</div>';
+}
+
+async function openDetail(nm) {
+  const m = document.getElementById('modal');
+  m.classList.remove('hidden');
+  document.getElementById('m-chart').textContent = 'загрузка…';
+  document.getElementById('m-img').src = '';
+
+  const j = await (await fetch(`/api/products/${nm}/history`)).json();
+  const p = j.product;
+  document.getElementById('m-title').textContent = p.name || `#${nm}`;
+  document.getElementById('m-brand').textContent = p.brand || '';
+  document.getElementById('m-name').textContent = p.name || '';
+  const mImg = document.getElementById('m-img');
+  const urls = j.img_urls || [j.img];
+  mImg.setAttribute('data-imgs', JSON.stringify(urls).replace(/"/g, '&quot;'));
+  mImg.setAttribute('data-i', '0');
+  mImg.style.opacity = 1;
+  mImg.src = urls[0];
+  document.getElementById('m-link').href = j.wb_url;
+
+  // блок целевой цены
+  window._currentNm = j.product.nm_id;
+  // подтянем актуальное состояние таргета через продукты-API (там есть target_price)
+  const pj = await (await fetch(`/api/products?limit=1&q=${encodeURIComponent(j.product.name||'')}`)).json();
+  let target = null;
+  const match = (pj.items || []).find(x => x.nm_id === j.product.nm_id);
+  if (match) target = match.target_price;
+  const inp = document.getElementById('m-target-input');
+  const clr = document.getElementById('m-target-clear');
+  const sts = document.getElementById('m-target-status');
+  inp.value = target != null ? Math.round(target) : '';
+  clr.classList.toggle('hidden', target == null);
+  if (target != null) {
+    const last = j.snapshots.length ? j.snapshots[j.snapshots.length-1].price : null;
+    if (last != null) {
+      const diff = last - target;
+      sts.textContent = diff <= 0
+        ? `✅ Цена сейчас (${fmt(last)}) уже ниже цели`
+        : `Сейчас ${fmt(last)} — до цели ${fmt(diff)}`;
+    } else {
+      sts.textContent = `Цель: ${fmt(target)}`;
+    }
+  } else {
+    sts.textContent = '';
+  }
+
+  const snaps = j.snapshots;
+  if (!snaps.length) {
+    document.getElementById('m-price').textContent = '—';
+    document.getElementById('m-delta').innerHTML = '';
+    document.getElementById('m-chart').textContent = 'данных пока нет';
+    document.getElementById('m-range').textContent = '';
+    return;
+  }
+  const last = snaps[snaps.length-1].price;
+  const first = snaps[0].price;
+  const min = Math.min(...snaps.map(s=>s.price));
+  const max = Math.max(...snaps.map(s=>s.price));
+  document.getElementById('m-price').textContent = fmt(last);
+  const delta = last - first;
+  if (delta === 0) document.getElementById('m-delta').innerHTML = `<span class="text-slate-500">без изменений за период</span>`;
+  else if (delta < 0) document.getElementById('m-delta').innerHTML = `<span class="text-emerald-300">↓ ${fmt(-delta)}</span>`;
+  else document.getElementById('m-delta').innerHTML = `<span class="text-orange-300">↑ ${fmt(delta)}</span>`;
+  document.getElementById('m-range').textContent = `мин ${fmt(min)} · макс ${fmt(max)} · ${snaps.length} точек`;
+
+  document.getElementById('m-chart').innerHTML = sparkline(snaps);
+}
+
+function sparkline(snaps) {
+  if (snaps.length < 2) return '<div class="text-slate-500 text-sm">нужно ≥2 точки для графика</div>';
+  const W = 600, H = 160, P = 8;
+  const xs = snaps.map(s=>s.ts), ps = snaps.map(s=>s.price);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs);
+  const y0 = Math.min(...ps), y1 = Math.max(...ps);
+  const rx = x1===x0 ? 1 : x1-x0;
+  const ry = y1===y0 ? 1 : y1-y0;
+  const pts = snaps.map(s => [
+    P + (s.ts - x0)/rx * (W - 2*P),
+    H - P - (s.price - y0)/ry * (H - 2*P),
+  ]);
+  const path = pts.map((p,i) => (i?'L':'M')+p[0].toFixed(1)+','+p[1].toFixed(1)).join(' ');
+  const area = path + ` L ${W-P},${H-P} L ${P},${H-P} Z`;
+  return `
+    <svg viewBox="0 0 ${W} ${H}" class="w-full h-40" preserveAspectRatio="none">
+      <defs><linearGradient id="g" x1="0" x2="0" y1="0" y2="1">
+        <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.4"/>
+        <stop offset="100%" stop-color="#38bdf8" stop-opacity="0"/>
+      </linearGradient></defs>
+      <path d="${area}" fill="url(#g)"/>
+      <path d="${path}" fill="none" stroke="#38bdf8" stroke-width="2"/>
+      ${pts.map(p => `<circle cx="${p[0].toFixed(1)}" cy="${p[1].toFixed(1)}" r="2" fill="#38bdf8"/>`).join('')}
+    </svg>`;
+}
+
+function closeModal() { document.getElementById('modal').classList.add('hidden'); }
+
+document.getElementById('m-target-save').addEventListener('click', async () => {
+  const nm = window._currentNm;
+  const price = parseInt(document.getElementById('m-target-input').value, 10);
+  if (!nm || !price || price <= 0) {
+    showToast('Введите целевую цену числом', 'info');
+    return;
+  }
+  const r = await fetch('/api/targets', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ nm_id: nm, target_price: price }),
+  });
+  if (r.ok) {
+    showToast(`🎯 Цель ${fmt(price)} установлена`, 'info');
+    document.getElementById('m-target-clear').classList.remove('hidden');
+    if (navigator.vibrate) navigator.vibrate(15);
+  }
+});
+document.getElementById('m-target-clear').addEventListener('click', async () => {
+  const nm = window._currentNm;
+  if (!nm) return;
+  await fetch(`/api/targets/${nm}`, { method: 'DELETE' });
+  document.getElementById('m-target-input').value = '';
+  document.getElementById('m-target-clear').classList.add('hidden');
+  document.getElementById('m-target-status').textContent = '';
+  showToast('Цель снята', 'info');
+});
+
+function showToast(html, kind='info') {
+  const root = document.getElementById('toasts');
+  const el = document.createElement('div');
+  const color = kind === 'alert'
+    ? 'bg-gradient-to-r from-red-500 to-rose-500 text-white border-red-400/50'
+    : 'bg-slate-800 text-slate-100 border-slate-700';
+  el.className = `toast-enter pointer-events-auto card rounded-2xl px-4 py-3 shadow-2xl border ${color}`;
+  el.innerHTML = html;
+  root.appendChild(el);
+  // мягкая вибрация если поддерживается
+  if (kind === 'alert' && navigator.vibrate) navigator.vibrate([20, 60, 20]);
+  requestAnimationFrame(() => {
+    el.classList.remove('toast-enter');
+    el.classList.add('toast-shown');
+  });
+  setTimeout(() => {
+    el.style.transition = 'all 0.3s';
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(-120%)';
+    setTimeout(() => el.remove(), 350);
+  }, 6000);
+}
+
+async function pollNewAlerts() {
+  try {
+    const j = await (await fetch('/api/alerts?limit=10')).json();
+    const fresh = j.items.filter(a => a.id > lastAlertId);
+    if (!fresh.length) return;
+    // первый запуск без сохранённого lastAlertId — просто запоминаем, не показываем
+    if (lastAlertId === 0) {
+      lastAlertId = Math.max(...j.items.map(a => a.id));
+      localStorage.setItem('lastAlertId', lastAlertId);
+      return;
+    }
+    fresh.reverse().forEach(a => {
+      showToast(`
+        <div class="flex items-center gap-3">
+          <span class="text-2xl">📉</span>
+          <div class="flex-1 min-w-0">
+            <div class="text-[11px] uppercase tracking-wider opacity-80">Новый дроп ${a.drop_pct.toFixed(1)}%</div>
+            <div class="text-sm font-semibold truncate">${escape(a.name||('#'+a.nm_id))}</div>
+            <div class="text-xs opacity-90">${fmt(a.current_price)} <span class="line-through opacity-70">${fmt(a.median_price)}</span></div>
+          </div>
+        </div>
+      `, 'alert');
+      lastAlertId = Math.max(lastAlertId, a.id);
+    });
+    localStorage.setItem('lastAlertId', lastAlertId);
+    // если мы на вкладке Дропы — перерисуем ленту
+    if (currentView === 'alerts') loadAlerts();
+  } catch(e) {}
+}
+
+// init
+refresh();
+// автообновление каждые 60 секунд
+setInterval(refresh, 60000);
+// поллинг новых дропов каждые 20 секунд (дешёвый запрос)
+setInterval(pollNewAlerts, 20000);
+pollNewAlerts();
+</script>
+
+</body>
+</html>
