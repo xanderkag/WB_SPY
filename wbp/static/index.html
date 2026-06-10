@@ -128,6 +128,30 @@
 
     <div class="card rounded-2xl p-4 space-y-3">
       <div class="flex items-center justify-between">
+        <div class="text-[11px] uppercase tracking-wider text-slate-400">Telegram-бот</div>
+        <div id="bot-state-pill" class="text-[10px] uppercase tracking-wider"></div>
+      </div>
+      <div id="bot-connected" class="hidden text-sm">
+        <div class="text-slate-200">@<span id="bot-username">—</span></div>
+        <div class="text-[10px] text-slate-500">токен: <code id="bot-masked">—</code></div>
+        <button id="bot-clear-btn" class="mt-2 text-xs text-red-400">отключить</button>
+      </div>
+      <div id="bot-form" class="space-y-2">
+        <input id="bot-token-input" type="password" placeholder="токен от @BotFather"
+               class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm font-mono" />
+        <button id="bot-save-btn" class="w-full bg-sky-500 text-slate-950 font-medium rounded-xl py-2 text-sm">
+          Подключить
+        </button>
+        <div class="text-[10px] text-slate-500">
+          Получи у <a href="https://t.me/BotFather" target="_blank" class="text-sky-400">@BotFather</a>:
+          <code>/newbot</code> → имя → токен формата <code>123456:ABC…</code>
+        </div>
+      </div>
+      <div id="bot-error" class="hidden text-xs text-red-400"></div>
+    </div>
+
+    <div class="card rounded-2xl p-4 space-y-3">
+      <div class="flex items-center justify-between">
         <div class="text-[11px] uppercase tracking-wider text-slate-400">Мониторим продавцов</div>
         <button id="sup-add-btn" class="text-xs text-sky-400">+ добавить</button>
       </div>
@@ -288,7 +312,7 @@ async function refresh() {
   if (currentView === 'alerts') return loadAlerts();
   if (currentView === 'catalog') return loadCatalog();
   if (currentView === 'watch')   return loadWatchlist();
-  if (currentView === 'stats')   { loadStats(); loadSuppliers(); return; }
+  if (currentView === 'stats')   { loadStats(); loadSuppliers(); loadBot(); return; }
 }
 
 async function loadStatusHeader() {
@@ -517,6 +541,76 @@ async function loadWatchlist() {
   list.innerHTML = items.map(productCard).join('');
   startImgs(list);
 }
+
+async function loadBot() {
+  const s = await (await fetch('/api/bot/status')).json();
+  const pill = document.getElementById('bot-state-pill');
+  const conn = document.getElementById('bot-connected');
+  const form = document.getElementById('bot-form');
+  const err  = document.getElementById('bot-error');
+  if (s.connected) {
+    pill.textContent = '● подключён';
+    pill.className = 'text-[10px] uppercase tracking-wider text-emerald-400';
+    conn.classList.remove('hidden');
+    form.classList.add('hidden');
+    document.getElementById('bot-username').textContent = s.username || '—';
+    document.getElementById('bot-masked').textContent = s.masked || '—';
+  } else if (s.configured) {
+    pill.textContent = '○ настроен, не подключён';
+    pill.className = 'text-[10px] uppercase tracking-wider text-amber-400';
+    conn.classList.remove('hidden');
+    form.classList.remove('hidden');  // даём ввести новый
+    document.getElementById('bot-username').textContent = s.username || '—';
+    document.getElementById('bot-masked').textContent = s.masked || '—';
+  } else {
+    pill.textContent = '○ не настроен';
+    pill.className = 'text-[10px] uppercase tracking-wider text-slate-500';
+    conn.classList.add('hidden');
+    form.classList.remove('hidden');
+  }
+  if (s.error) {
+    err.classList.remove('hidden');
+    err.textContent = '⚠ ' + s.error;
+  } else {
+    err.classList.add('hidden');
+  }
+}
+
+document.getElementById('bot-save-btn').addEventListener('click', async () => {
+  const inp = document.getElementById('bot-token-input');
+  const token = inp.value.trim();
+  if (!token || !token.includes(':')) {
+    showToast('Токен должен быть формата <code>123456:ABC…</code>', 'info');
+    return;
+  }
+  const btn = document.getElementById('bot-save-btn');
+  btn.textContent = 'Подключаю…';
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/bot/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token }),
+    });
+    const j = await r.json();
+    if (r.ok) {
+      showToast(`✅ Подключён как @${j.username}`, 'info');
+      inp.value = '';
+      await loadBot();
+    } else {
+      showToast(j.detail || 'Не удалось подключить', 'info');
+    }
+  } finally {
+    btn.textContent = 'Подключить';
+    btn.disabled = false;
+  }
+});
+
+document.getElementById('bot-clear-btn').addEventListener('click', async () => {
+  if (!confirm('Отключить бота и стереть токен?')) return;
+  await fetch('/api/bot/token', { method: 'DELETE' });
+  showToast('Бот отключён', 'info');
+  loadBot();
+});
 
 async function loadSuppliers() {
   const el = document.getElementById('sup-list');

@@ -11,20 +11,174 @@ Web читает ту же wb.sqlite3 что и парсер. Парсер мо�
 """
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from loguru import logger
 from pydantic import BaseModel, Field
 
 from .config import settings
 
 
-app = FastAPI(title="WB Parser", docs_url="/api/docs", redoc_url=None)
+# ---------- Telegram bot lifecycle ----------
+
+_bot_task: asyncio.Task | None = None
+_current_bot = None  # aiogram Bot
+_bot_username: str | None = None
+_bot_error: str | None = None
+
+
+def _get_setting(key: str) -> str | None:
+    with _db() as db:
+        row = db.execute(
+            "SELECT value FROM app_settings WHERE key = ?", (key,)
+        ).fetchone()
+    return row["value"] if row else None
+
+
+def _set_setting(key: str, value: str | None) -> None:
+    with _db() as db:
+        if value is None:
+            db.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+        else:
+            db.execute(
+                "INSERT INTO app_settings(key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (key, value, int(time.time())),
+            )
+        db.commit()
+
+
+def _effective_token() -> str | None:
+    """Берём токен сначала из БД, fallback на env (settings.tg_bot_token)."""
+    return _get_setting("tg_bot_token") or (settings.tg_bot_token or None)
+
+
+async def _start_bot_polling(token: str) -> None:
+    """Запускает aiogram polling. Заменяет текущего бота если был."""
+    global _bot_task, _current_bot, _bot_username, _bot_error
+    await _stop_bot_polling()
+    try:
+        from aiogram import Bot
+        from aiogram.client.default import DefaultBotProperties
+        from aiogram.enums import ParseMode
+        from .bot import dp  # переиспользуем диспатчер с командами
+
+        bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+        me = await bot.get_me()
+        _bot_username = me.username
+        _current_bot = bot
+        _bot_error = None
+        logger.info("Telegram бот подключён: @{}", me.username)
+
+        async def _poll():
+            try:
+                await dp.start_polling(bot, handle_signals=False)
+            except Exception as e:
+                global _bot_error
+                _bot_error = str(e)[:200]
+                logger.warning("bot polling stopped: {}", e)
+        _bot_task = asyncio.create_task(_poll())
+    except Exception as e:
+        _bot_error = str(e)[:200]
+        _current_bot = None
+        _bot_username = None
+        logger.error("Не удалось запустить бота: {}", e)
+        raise
+
+
+async def _stop_bot_polling() -> None:
+    global _bot_task, _current_bot, _bot_username
+    if _bot_task and not _bot_task.done():
+        _bot_task.cancel()
+        try:
+            await _bot_task
+        except (asyncio.CancelledError, Exception):
+            pass
+    if _current_bot is not None:
+        try:
+            await _current_bot.session.close()
+        except Exception:
+            pass
+    _bot_task = None
+    _current_bot = None
+    _bot_username = None
+
+
+def _mask_token(token: str) -> str:
+    if not token or ":" not in token:
+        return ""
+    bot_id, secret = token.split(":", 1)
+    return f"{bot_id}:{secret[:4]}…{secret[-3:]}"
+
+
+# ---------- collector lifecycle ----------
+
+_collector_task: asyncio.Task | None = None
+
+
+async def _console_alert(event, prod):
+    # как в cli.py, но без stdout-форматирования — пишем в лог.
+    logger.info("📉 ДРОП nm={} {:.1f}% {:,.0f} → {:,.0f} ₽",
+                prod.nm_id, event.drop_pct, event.median_price, event.current_price)
+
+
+async def _combined_alert(event, prod):
+    await _console_alert(event, prod)
+    bot = _current_bot
+    if bot is None:
+        return
+    try:
+        from .bot import format_alert
+        from . import db as _dbmod
+        text = format_alert(event, prod)
+        subs = await _dbmod.active_subscribers()
+        for uid in subs:
+            if await _dbmod.is_muted(uid, prod.nm_id):
+                continue
+            try:
+                await bot.send_message(uid, text, disable_web_page_preview=False)
+            except Exception as e:
+                logger.warning("TG send to {} failed: {}", uid, e)
+    except Exception as e:
+        logger.warning("alert dispatch error: {}", e)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _collector_task
+    # стартуем коллектор
+    from . import db as _dbmod
+    from .collector import run_collector_loop
+    await _dbmod.get_db()  # инициализация схемы
+    _collector_task = asyncio.create_task(run_collector_loop(_combined_alert))
+    # стартуем бота если есть токен
+    token = _effective_token()
+    if token:
+        try:
+            await _start_bot_polling(token)
+        except Exception:
+            pass  # ошибка уже залогирована; web UI покажет состояние
+    try:
+        yield
+    finally:
+        await _stop_bot_polling()
+        if _collector_task and not _collector_task.done():
+            _collector_task.cancel()
+            try:
+                await _collector_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+
+app = FastAPI(title="WB Parser", docs_url="/api/docs", redoc_url=None, lifespan=lifespan)
 
 ROOT = Path(__file__).parent
 STATIC = ROOT / "static"
@@ -339,6 +493,53 @@ def api_supplier_toggle(tid: int):
             "UPDATE tracked_suppliers SET active = 1 - active WHERE id = ?", (tid,)
         )
         db.commit()
+    return {"ok": True}
+
+
+# ---------- telegram bot ----------
+
+class BotTokenIn(BaseModel):
+    token: str = Field(..., min_length=20)
+
+
+@app.get("/api/bot/status")
+def api_bot_status():
+    token = _effective_token()
+    from_db = _get_setting("tg_bot_token") is not None
+    return {
+        "configured": bool(token),
+        "source": "db" if from_db else ("env" if token else None),
+        "masked": _mask_token(token or ""),
+        "username": _bot_username,
+        "connected": _current_bot is not None and (_bot_task is not None and not _bot_task.done()),
+        "error": _bot_error,
+    }
+
+
+@app.post("/api/bot/token")
+async def api_bot_set_token(body: BotTokenIn):
+    token = body.token.strip()
+    # быстрая проверка валидности через getMe
+    try:
+        from aiogram import Bot
+        probe = Bot(token=token)
+        me = await probe.get_me()
+        await probe.session.close()
+    except Exception as e:
+        raise HTTPException(400, f"Невалидный токен: {e}")
+
+    _set_setting("tg_bot_token", token)
+    try:
+        await _start_bot_polling(token)
+    except Exception as e:
+        raise HTTPException(500, f"Сохранено, но не запустилось: {e}")
+    return {"ok": True, "username": me.username}
+
+
+@app.delete("/api/bot/token")
+async def api_bot_clear_token():
+    _set_setting("tg_bot_token", None)
+    await _stop_bot_polling()
     return {"ok": True}
 
 

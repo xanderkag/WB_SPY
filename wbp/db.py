@@ -92,6 +92,14 @@ CREATE TABLE IF NOT EXISTS target_prices (
     last_notified_ts   INTEGER
 );
 
+-- runtime-настройки приложения (key/value).
+-- сейчас тут лежит tg_bot_token чтобы юзер ставил его прямо из UI.
+CREATE TABLE IF NOT EXISTS app_settings (
+    key         TEXT PRIMARY KEY,
+    value       TEXT,
+    updated_at  INTEGER NOT NULL
+);
+
 -- включаем WAL чтобы web и collector не конфликтовали по записи.
 PRAGMA journal_mode=WAL;
 """
