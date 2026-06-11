@@ -154,12 +154,22 @@ async def _combined_alert(event, prod):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _collector_task
-    # стартуем коллектор
     from . import db as _dbmod
+    await _dbmod.get_db()  # инициализация схемы (нужна и в API-only режиме)
+
+    if settings.web_api_only:
+        # API-only: collector и бот живут в отдельном worker (cli loop).
+        # Не поднимаем их здесь, иначе двойной парсер + Telegram 409.
+        logger.info("WEB_API_ONLY=1 — только API+PWA, collector/bot не запускаю")
+        try:
+            yield
+        finally:
+            pass
+        return
+
+    # обычный режим — web самодостаточен: collector + bot внутри процесса
     from .collector import run_collector_loop
-    await _dbmod.get_db()  # инициализация схемы
     _collector_task = asyncio.create_task(run_collector_loop(_combined_alert))
-    # стартуем бота если есть токен
     token = _effective_token()
     if token:
         try:
@@ -506,12 +516,24 @@ class BotTokenIn(BaseModel):
 def api_bot_status():
     token = _effective_token()
     from_db = _get_setting("tg_bot_token") is not None
+    if settings.web_api_only:
+        # бот живёт в worker — web не знает его реального состояния polling.
+        return {
+            "configured": bool(token),
+            "source": "db" if from_db else ("env" if token else None),
+            "masked": _mask_token(token or ""),
+            "username": None,
+            "connected": None,
+            "managed_by": "worker",
+            "error": None,
+        }
     return {
         "configured": bool(token),
         "source": "db" if from_db else ("env" if token else None),
         "masked": _mask_token(token or ""),
         "username": _bot_username,
         "connected": _current_bot is not None and (_bot_task is not None and not _bot_task.done()),
+        "managed_by": "web",
         "error": _bot_error,
     }
 
@@ -529,6 +551,11 @@ async def api_bot_set_token(body: BotTokenIn):
         raise HTTPException(400, f"Невалидный токен: {e}")
 
     _set_setting("tg_bot_token", token)
+    if settings.web_api_only:
+        # бота держит отдельный worker — он подхватит токен из БД при рестарте.
+        # В web-процессе polling НЕ поднимаем (иначе Telegram 409).
+        return {"ok": True, "username": me.username,
+                "note": "сохранено; перезапусти worker (wbspy-worker) чтобы бот подключился"}
     try:
         await _start_bot_polling(token)
     except Exception as e:
@@ -539,7 +566,8 @@ async def api_bot_set_token(body: BotTokenIn):
 @app.delete("/api/bot/token")
 async def api_bot_clear_token():
     _set_setting("tg_bot_token", None)
-    await _stop_bot_polling()
+    if not settings.web_api_only:
+        await _stop_bot_polling()
     return {"ok": True}
 
 

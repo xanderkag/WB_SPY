@@ -191,10 +191,11 @@ async def make_alert_callback(bot: Bot):
     return cb
 
 
-def make_bot() -> Bot:
-    if not settings.tg_bot_token:
-        raise RuntimeError("TG_BOT_TOKEN не задан в .env")
+def make_bot(token: str | None = None) -> Bot:
+    tok = token or settings.tg_bot_token
+    if not tok:
+        raise RuntimeError("Токен бота не задан (ни в БД через UI, ни в .env)")
     return Bot(
-        token=settings.tg_bot_token,
+        token=tok,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )

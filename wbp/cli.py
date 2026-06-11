@@ -57,17 +57,16 @@ async def main() -> None:
     if settings.use_curl_cffi:
         logger.info("USE_CURL_CFFI=1 — TLS-impersonation Chrome 124")
 
-    bot = None
-    dp = None
-    tg_task = None
     alert_cb = console_alert
 
-    if mode == "loop" and settings.tg_bot_token:
-        from .bot import dp as _dp, make_alert_callback, make_bot
-        bot = make_bot()
-        dp = _dp
-        # подключаем БД и формируем TG callback
-        async with db.lifespan():
+    # БД открываем первой — токен бота может лежать в ней (задан через UI),
+    # а не только в .env. effective_bot_token() читает БД → env.
+    async with db.lifespan():
+        token = await db.effective_bot_token() if mode == "loop" else None
+
+        if token:
+            from .bot import dp, make_alert_callback, make_bot
+            bot = make_bot(token)
             tg_cb = await make_alert_callback(bot)
             alert_cb = _make_combined_alert(tg_cb)
             logger.info("Telegram бот включён — пиши /start в TG чтобы подписаться")
@@ -85,16 +84,15 @@ async def main() -> None:
                 except Exception:
                     pass
                 await _close_backends()
-        return
+            return
 
-    # без TG: либо once, либо loop без токена
-    async with db.lifespan():
+        # без токена: once или loop без бота
         try:
             if mode == "once":
                 logger.info("один тик коллектора → выход")
                 await collector_tick(alert_cb)
             elif mode == "loop":
-                logger.info("бесконечный цикл (TG-бот не подключён — нет TG_BOT_TOKEN)")
+                logger.info("бесконечный цикл (TG-бот не подключён — токен не задан)")
                 await run_collector_loop(alert_cb)
             else:
                 print(__doc__)

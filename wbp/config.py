@@ -26,6 +26,11 @@ class Settings(BaseSettings):
     use_playwright: bool = False
     use_curl_cffi: bool = False
 
+    # WEB_API_ONLY=1 — web обслуживает только API+PWA, НЕ поднимает collector и
+    # Telegram-бота (их держит отдельный worker: `python -m wbp.cli loop`).
+    # Защита от двойного парсера и конфликта Telegram getUpdates (409).
+    web_api_only: bool = False
+
     # Прокси: пусто = без прокси (или системный HTTPS_PROXY).
     # Форматы: http://user:pass@host:port, http://host:port, socks5://host:port.
     proxy_url: str = ""

@@ -374,6 +374,20 @@ async def maybe_daily_backup() -> str | None:
     return str(dst)
 
 
+async def get_app_setting(key: str) -> str | None:
+    db = await get_db()
+    async with db.execute("SELECT value FROM app_settings WHERE key = ?", (key,)) as cur:
+        row = await cur.fetchone()
+    return row["value"] if row else None
+
+
+async def effective_bot_token() -> str | None:
+    """Токен из БД (задан через UI) с приоритетом, fallback на .env.
+    Используется И web, И worker, чтобы UI-токен доходил до обоих."""
+    from_db = await get_app_setting("tg_bot_token")
+    return from_db or (settings.tg_bot_token or None)
+
+
 async def active_supplier_ids() -> list[int]:
     """Источник правды для collector — что мониторим прямо сейчас."""
     db = await get_db()
