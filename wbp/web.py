@@ -268,6 +268,29 @@ def _img(nm_id: int) -> str:
 
 # ---------- API ----------
 
+@app.get("/healthz")
+def healthz():
+    """Лёгкий health-check для деплоя/мониторинга. Не рендерит HTML.
+    Возвращает 200 если БД доступна. Поля для диагностики: возраст последнего
+    тика, режим процесса (api-only / full)."""
+    import os
+    info: dict[str, Any] = {
+        "status": "ok",
+        "mode": "api-only" if settings.web_api_only else "full",
+        "pid": os.getpid(),
+        "ts": int(time.time()),
+    }
+    try:
+        with _db() as db:
+            info["products"] = db.execute("SELECT COUNT(*) FROM products").fetchone()[0]
+            last = db.execute("SELECT MAX(ts) FROM price_snapshots").fetchone()[0]
+            info["last_tick_ts"] = last
+            info["last_tick_age_sec"] = (int(time.time()) - last) if last else None
+    except Exception as e:
+        return JSONResponse({"status": "degraded", "error": str(e)[:200]}, status_code=503)
+    return info
+
+
 @app.get("/api/stats")
 def api_stats():
     with _db() as db:

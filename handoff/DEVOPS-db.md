@@ -15,7 +15,7 @@
 | таблица | строк | назначение |
 |---|---|---|
 | `products` | 131 | карточки товаров (nm_id, имя, бренд, supplier_id, subject_id) |
-| `price_snapshots` | 2868 | история цен — по строке на каждое наблюдение, основной объём |
+| `price_snapshots` | 3261 | история цен — по строке на каждое наблюдение, основной объём |
 | `alerts` | 0 | сработавшие алёрты (дропы / целевые цены) |
 | `tracked_suppliers` | 2 | каких продавцов мониторим (250090328 R2D2 + 1 пустой) |
 | `watchlist` | 0 | избранное пользователя |
@@ -38,7 +38,7 @@ SQLite хватает с запасом.
 
 sha256 снимка:
 ```
-27a49d88b592eebf7a0ce3e2b27f666286ecca0cf61b73662bf93c9ac40f83ac  wb-export.sqlite3
+f8db7dcbb1d4fdcf78ecb6ab81d75abf5636f59577816d5d7f785970f80ae849  wb-export.sqlite3
 ```
 
 ## ⚠️ Почему НЕ копировать `wb.sqlite3` напрямую
@@ -123,27 +123,38 @@ CREATE TABLE app_settings (key TEXT PRIMARY KEY, value TEXT, updated_at INTEGER 
 Приложение открывает БД через `aiosqlite.connect(DB_PATH)` и сразу ставит
 `PRAGMA journal_mode=WAL`. Никаких логина/пароля/порта — это файл.
 
-## ⚠️ Важно для архитектуры web+worker
+## Архитектура web+worker (флаги — ЗАШИТЫ)
 
-В текущем `docker-compose.yml` два сервиса пишут в один файл на одном volume:
-- `web`   — `uvicorn wbp.web:app`
-- `worker`— `python -m wbp.cli loop`
+Два сервиса из одного образа пишут в один SQLite на volume `wbspy-data`:
+- `web`   — `uvicorn wbp.web:app`, **`WEB_API_ONLY=1`** → только API+PWA
+- `worker`— `python -m wbp.cli loop` → collector loop + Telegram-бот
 
-Два нюанса, которые надо проверить перед продом:
+1. **Двойной коллектор/бот — РЕШЕНО** (коммит `9a51a43`). При `WEB_API_ONLY=1`
+   web НЕ поднимает collector/bot (проверено: 0 тиков, бот `managed_by=worker`).
+   `docker-compose.yml` уже содержит `WEB_API_ONLY: "1"` на сервисе web.
+   Бот живёт только в worker → конфликта Telegram 409 нет.
+   - ⚠️ Токен через UI кладётся в БД (`app_settings`). worker читает его на старте
+     (`db.effective_bot_token()`: БД → env). После ввода токена в вебе —
+     **рестартни `wbspy-worker`**, чтобы бот подключился. (API `/api/bot/token`
+     возвращает это в поле `note`.)
 
-1. **Двойной коллектор/бот.** `web.py` (через FastAPI lifespan) тоже поднимает
-   collector loop и Telegram-бота. `worker` (`cli loop`) — тоже. Если оба активны,
-   будет: (а) два парсера дублируют запросы к WB, (б) **конфликт Telegram
-   `getUpdates` 409** (бот может быть только в одном процессе). Решение —
-   одно из:
-   - сделать web API-only (не стартовать collector/bot в lifespan, если задан
-     флаг `WEB_API_ONLY=1`), а collector/bot держать только в worker; **или**
-   - убрать worker, оставить один web-контейнер (он самодостаточен).
-   Рекомендую первое. Нужен мелкий патч в `web.py` — могу сделать.
+2. **SQLite + общий volume.** WAL между процессами на ЛОКАЛЬНОМ volume — ок.
+   Сетевой (NFS/SMB) ломает WAL. На Asha локальный SSD → ок (подтверждено DevOps).
 
-2. **SQLite + общий volume.** WAL между процессами в одном контейнере/хосте на
-   локальном volume — ок. Но если volume сетевой (NFS/SMB) — WAL ломается, нужен
-   локальный диск. Проверить тип volume на Asha.
+## Health-check (для CI/мониторинга)
+
+Эндпоинт **`GET /healthz`** (коммит см. ниже) — лёгкий, без рендера HTML:
+```json
+{"status":"ok","mode":"full|api-only","products":131,"last_tick_age_sec":1593}
+```
+- 200 + `status:ok` — БД доступна.
+- 503 + `status:degraded` — БД недоступна.
+- `last_tick_age_sec` — возраст последнего снимка цен; если на worker'е он растёт
+  бесконтрольно (> ~2× POLL_INTERVAL) — парсер встал (VPN отвалился / WAF).
+
+Бить health лучше в `/healthz`, а не в `/` (тот рендерит весь HTML).
+mode у `web` будет `api-only`; реальный парсинг проверяется по worker'у —
+у него `/healthz` нет (он не web), смотри `last_tick_age_sec` через web (общая БД).
 
 ## Перенос в Postgres (если когда-то понадобится)
 
