@@ -181,6 +181,12 @@ async def collector_tick(on_alert: AlertCallback) -> None:
     logger.info("tick done: seen={} drops={} in {:.1f}s",
                 total_seen, total_drops, time.time() - started)
 
+    # авто-бэкап БД раз в сутки (идемпотентно — частый вызов безопасен)
+    try:
+        await db.maybe_daily_backup()
+    except Exception as e:
+        logger.warning("daily backup error: {}", e)
+
 
 async def run_collector_loop(on_alert: AlertCallback) -> None:
     while True:

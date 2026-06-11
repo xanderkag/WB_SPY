@@ -50,6 +50,16 @@ async def main() -> None:
                         ci + 1, len(CATEGORIES), cat.name, cat.shard, cat.cat)
             for page in range(1, PAGES_PER_CATEGORY + 1):
                 products = await wb.category_page(cat.shard, cat.cat, cat.xsubject, page)
+                # первая страница пустая — это часто транзиентный soft-block, а не
+                # реально пустая категория. Ретраим несколько раз с паузой.
+                if not products and page == 1:
+                    for attempt in range(3):
+                        wait = 6 + attempt * 6
+                        logger.info("  стр 1 пуста — ретрай #{} через {}с", attempt + 1, wait)
+                        await asyncio.sleep(wait)
+                        products = await wb.category_page(cat.shard, cat.cat, cat.xsubject, page)
+                        if products:
+                            break
                 if not products:
                     logger.info("  страница {} пуста — стоп", page)
                     break
@@ -97,13 +107,21 @@ async def main() -> None:
             all_ids.add(sid)
 
     if all_ids:
-        print(f"\n\n✅ Готовый список для config.py (всего {len(all_ids)}):")
+        print(f"\n\n✅ Найдено по фильтрам (всего {len(all_ids)}):")
         print(f"WB_SELF_SUPPLIER_IDS = {sorted(all_ids)}")
     else:
-        print("\n❌ Никого не нашли.")
-        print("ТОП-15 самых частых продавцов:")
-        for sid, cnt in sorted(seller_count.items(), key=lambda x: -x[1])[:15]:
-            print(f"  {sid:>11}  {cnt:>5} тов.  {seller_info[sid]['name']!r}")
+        print("\n❌ По именам-фильтрам никого.")
+
+    # ВСЕГДА печатаем топ продавцов — вдруг нужный есть, но regex не поймал.
+    print(f"\n{'─' * 80}")
+    print("ТОП-25 продавцов в выборке (для ручной проверки — вдруг кого пропустили):")
+    print(f"{'supplierId':>11}  {'тов.':>5}  название")
+    print("─" * 60)
+    for sid, cnt in sorted(seller_count.items(), key=lambda x: -x[1])[:25]:
+        print(f"  {sid:>11}  {cnt:>5}  {seller_info[sid]['name']!r}")
+    print(f"\n⚠️  Покрыто категорий: только те где была выдача. Если ноутбуки/"
+          f"смартфоны дали 0 — список НЕ полный, добавляй продавцов вручную "
+          f"через админку по их /seller/<id>.")
 
 
 if __name__ == "__main__":

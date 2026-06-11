@@ -323,12 +323,25 @@ async function loadStatusHeader() {
   } catch(e) { document.getElementById('hdr-status').textContent = 'оффлайн'; }
 }
 
-function pricePill(drop) {
-  if (drop == null) return '<span class="text-xs text-slate-500">—</span>';
-  if (drop >= 10) return `<span class="text-xs px-2 py-0.5 rounded-full bg-red-500/20 text-red-300">−${drop}%</span>`;
-  if (drop > 0) return `<span class="text-xs px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-300">−${drop}%</span>`;
-  if (drop < 0) return `<span class="text-xs px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">+${-drop}%</span>`;
-  return `<span class="text-xs px-2 py-0.5 rounded-full bg-slate-700 text-slate-300">0%</span>`;
+// Изменение цены за 24ч: первая точка спарклайна → текущая.
+// Падение (хорошо для покупателя) — зелёное со стрелкой вниз,
+// рост — оранжевое со стрелкой вверх, без движения — серый «0%».
+function changePill(p) {
+  const s = p.spark;
+  if (!s || s.length < 2) return '<span class="text-xs text-slate-500">—</span>';
+  const first = s[0], last = s[s.length - 1];
+  if (!first) return '<span class="text-xs text-slate-500">—</span>';
+  const pct = (last - first) / first * 100;
+  const r = Math.abs(pct).toFixed(1);
+  if (pct <= -0.05) {  // упало
+    const strong = Math.abs(pct) >= 10;
+    const cls = strong ? 'bg-red-500/20 text-red-300 font-semibold' : 'bg-emerald-500/20 text-emerald-300';
+    return `<span class="text-xs px-2 py-0.5 rounded-full ${cls}">↓ ${r}%</span>`;
+  }
+  if (pct >= 0.05) {   // выросло
+    return `<span class="text-xs px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-300">↑ ${r}%</span>`;
+  }
+  return `<span class="text-xs px-2 py-0.5 rounded-full bg-slate-700 text-slate-400">0%</span>`;
 }
 
 // «Лучшая цена за период» — приоритетный бейдж (вместо обычного pill).
@@ -405,7 +418,7 @@ function starBtn(nm, watched) {
 
 function productCard(p) {
   const best = bestPill(p);
-  const fallbackPill = best ? '' : pricePill(p.drop_pct_24h);
+  const fallbackPill = best ? '' : changePill(p);
   return `
     <div onclick="openDetail(${p.nm_id})" class="card rounded-2xl p-3 flex gap-3 active:scale-[0.98] transition cursor-pointer">
       ${imgTag(p, 'w-20 h-20 rounded-xl bg-slate-800 object-contain shrink-0')}
@@ -621,15 +634,19 @@ async function loadSuppliers() {
     return;
   }
   el.innerHTML = j.items.map(s => {
-    const label = s.alias || s.detected_name || '—';
-    const onoff = s.active
-      ? '<span class="text-emerald-400">●</span>'
-      : '<span class="text-slate-600">○</span>';
+    const ghost = (s.products_n || 0) === 0;   // активен, но каталог пустой
+    const label = s.alias || s.detected_name || (ghost ? 'неизвестный' : '—');
+    const onoff = !s.active
+      ? '<span class="text-slate-600">○</span>'
+      : (ghost ? '<span class="text-slate-500">👻</span>' : '<span class="text-emerald-400">●</span>');
+    const sub = ghost
+      ? '<span class="text-amber-500/80">спит — каталог пуст</span>'
+      : `${s.products_n} товаров в БД`;
     return `
       <div class="flex items-center justify-between gap-2 py-1">
         <div class="min-w-0">
           <div class="truncate text-slate-200">${onoff} ${escape(label)} <span class="text-slate-500">#${s.supplier_id}</span></div>
-          <div class="text-[10px] text-slate-500">${s.products_n||0} товаров в БД</div>
+          <div class="text-[10px] text-slate-500">${sub}</div>
         </div>
         <div class="flex gap-2 shrink-0">
           <button onclick="toggleSupplier(${s.id})" class="text-xs text-sky-400">${s.active?'выкл':'вкл'}</button>

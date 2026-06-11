@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, Iterable
 
@@ -339,6 +340,38 @@ async def is_muted(tg_user_id: int, nm_id: int) -> bool:
     if until is None:
         return True
     return int(time.time()) < until
+
+
+async def maybe_daily_backup() -> str | None:
+    """Раз в сутки делает консистентный снимок БД в backups/wb-YYYYMMDD.sqlite3.
+    Использует VACUUM INTO — безопасно при работающем WAL, не ломает живую БД.
+    Хранит последние 14 бэкапов, старые удаляет. Идемпотентно: если бэкап за
+    сегодня уже есть — ничего не делает."""
+    src = Path(settings.db_path)
+    if not src.exists():
+        return None
+    backups = src.parent / "backups"
+    backups.mkdir(exist_ok=True)
+    today = datetime.now().strftime("%Y%m%d")
+    dst = backups / f"wb-{today}.sqlite3"
+    if dst.exists():
+        return None  # уже есть за сегодня
+    db = await get_db()
+    try:
+        # VACUUM INTO требует, чтобы путь не существовал
+        await db.execute(f"VACUUM INTO '{dst.as_posix()}'")
+        logger.info("бэкап БД создан: {}", dst)
+    except Exception as e:
+        logger.warning("бэкап не удался: {}", e)
+        return None
+    # ротация: оставляем 14 свежих
+    snaps = sorted(backups.glob("wb-*.sqlite3"))
+    for old in snaps[:-14]:
+        try:
+            old.unlink()
+        except Exception:
+            pass
+    return str(dst)
 
 
 async def active_supplier_ids() -> list[int]:

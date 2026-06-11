@@ -11,6 +11,7 @@ venv/
 *.sqlite3-wal
 *.sqlite3-journal
 *.db
+backups/
 *.log
 .pytest_cache/
 .mypy_cache/
