@@ -1,0 +1,82 @@
+# Health/wire для wbspy на Asha через Actions (прямого SSH к серверу нет).
+# mode=health — статус контейнеров wbspy + health веба + логи (только wbspy).
+# mode=wire   — добавить маршрут wbspy в общий nginx (base64-блок + nginx -t gate + откат).
+name: asha-wbspy
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "health | wire"
+        type: string
+        required: true
+        default: "health"
+
+env:
+  HOST: 135.106.158.143
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH key
+        env:
+          KEY: ${{ secrets.SSH_PRIVATE_KEY_ASHA }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/asha
+          chmod 600 ~/.ssh/asha
+          ssh-keyscan -p 22 -H "$HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+      - name: Run on server
+        env:
+          MODE: ${{ inputs.mode }}
+          BLOCK_B64: CiMg4pSA4pSA4pSAIHdic3B5IChhZGRlZCBieSBDSSkg4pSA4pSA4pSACnNlcnZlciB7CiAgICBsaXN0ZW4gODA7CiAgICBzZXJ2ZXJfbmFtZSB3YnNweS4xMzUuMTA2LjE1OC4xNDMubmlwLmlvOwogICAgcmVzb2x2ZXIgMTI3LjAuMC4xMSB2YWxpZD0xMHM7CiAgICBsb2NhdGlvbiAvIHsKICAgICAgICBzZXQgJHVfd2JzcHkgd2JzcHktd2ViOwogICAgICAgIHByb3h5X3Bhc3MgaHR0cDovLyR1X3dic3B5OjgwMDA7CiAgICAgICAgcHJveHlfc2V0X2hlYWRlciBIb3N0ICRob3N0OwogICAgICAgIHByb3h5X3NldF9oZWFkZXIgWC1SZWFsLUlQICRyZW1vdGVfYWRkcjsKICAgICAgICBwcm94eV9zZXRfaGVhZGVyIFgtRm9yd2FyZGVkLUZvciAkcHJveHlfYWRkX3hfZm9yd2FyZGVkX2ZvcjsKICAgICAgICBwcm94eV9zZXRfaGVhZGVyIFgtRm9yd2FyZGVkLVByb3RvICRzY2hlbWU7CiAgICB9Cn0K
+        run: |
+          ssh -i ~/.ssh/asha -o StrictHostKeyChecking=accept-new -p 22 root@"$HOST" \
+            "MODE='$MODE' BLOCK_B64='$BLOCK_B64' bash -se" <<'REMOTE'
+          if [ "$MODE" = "wire" ]; then
+            set -e
+            NGINX=shared-nginx-1
+            CONF=/opt/shared/nginx/conf.d/default.conf
+            DOMAIN=wbspy.135.106.158.143.nip.io
+            docker ps --format '{{.Names}}' | grep -qx "$NGINX" || { echo "✗ нет $NGINX"; exit 1; }
+            if grep -q "$DOMAIN" "$CONF"; then
+              echo "→ блок уже есть, reload"
+            else
+              BAK="${CONF}.bak.$(date +%s)"
+              cp "$CONF" "$BAK"; echo "→ бэкап $BAK"
+              printf '%s' "$BLOCK_B64" | base64 -d >> "$CONF"
+              echo "→ блок wbspy добавлен"
+              docker exec "$NGINX" nginx -t || { echo "✗ nginx -t FAIL → откат"; cp "$BAK" "$CONF"; exit 1; }
+            fi
+            docker exec "$NGINX" nginx -s reload
+            echo "✓ reloaded"
+            sleep 1
+            curl -s -o /dev/null -w "→ internal wbspy = %{http_code}\n" -H "Host: $DOMAIN" http://127.0.0.1/ || true
+          else
+            set +e
+            echo "=== контейнеры wbspy ==="
+            for c in wbspy-web wbspy-worker; do
+              echo "$c: $(docker inspect $c --format '{{.State.Status}} exit={{.State.ExitCode}} restarts={{.RestartCount}}' 2>/dev/null || echo missing)"
+            done
+            echo "=== web health (retry до 200) ==="
+            for i in $(seq 1 10); do
+              code=$(docker run --rm --network proxy curlimages/curl:8.10.1 -s -o /dev/null -w "%{http_code}" --max-time 4 http://wbspy-web:8000/ 2>/dev/null)
+              echo "  try $i: ${code:-err}"
+              [ "$code" = "200" ] && break
+              sleep 3
+            done
+            echo "=== wbspy-web logs (tail 50) ==="
+            docker logs wbspy-web --tail 50 2>&1
+            echo "=== wbspy-worker logs (tail 25) ==="
+            docker logs wbspy-worker --tail 25 2>&1
+          fi
+          REMOTE
+
+      - name: Verify from runner (wire)
+        if: ${{ inputs.mode == 'wire' }}
+        run: |
+          sleep 2
+          curl -s -o /dev/null -w "wbspy.nip.io → HTTP %{http_code}\n" \
+            http://wbspy.135.106.158.143.nip.io/ || echo "external curl failed"
