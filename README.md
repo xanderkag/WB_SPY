@@ -13,6 +13,121 @@
 - 📱 **PWA** — manifest + service worker + apple-touch-icon. На iPhone «Поделиться → На главный экран» → fullscreen-app.
 - ⚙️ **CRUD продавцов из UI** — добавил supplierId в табе «Статус», парсер подхватит со следующего тика.
 
+## Архитектура
+
+Весь стек — **один Python-процесс** (`uvicorn wbp.web:app`), который держит коллектор, детектор, бота и веб-API. Состояние — в SQLite. Доступ к WB — через системный VPN на macOS.
+
+```mermaid
+graph TB
+    User[👤 Юзер<br/>iPhone / Mac<br/>PWA в Safari]
+
+    subgraph Internet["🌐 Интернет (внешние сервисы)"]
+        WB["🛒 Wildberries<br/>catalog.wb.ru<br/>sellers/v4/catalog"]
+        TG["📨 Telegram API<br/>api.telegram.org"]
+        GH["📂 GitHub<br/>xanderkag/WB_SPY"]
+        VPNGate["🇯🇵🇷🇺 VPN Gate<br/>(публичные OpenVPN)"]
+    end
+
+    subgraph Mac["💻 macOS — твой ноут (на котором всё крутится)"]
+        Tunnel["🔐 Tunnelblick<br/>OpenVPN-туннель<br/>(подменяет IP)"]
+
+        subgraph Process["⚙️ uvicorn wbp.web:app — один процесс Python"]
+            direction TB
+            Collector["⏱ Collector loop<br/>tick раз в 30 мин"]
+            CFFI["🌐 curl_cffi<br/>TLS-impersonation<br/>Chrome 124"]
+            Detector["📉 Detector<br/>медиана 24ч × -10%<br/>+ target-цены<br/>+ дедуп 6ч"]
+            Bot["🤖 Telegram Bot<br/>aiogram polling<br/>/start /list /mute"]
+            WebAPI["🟦 FastAPI<br/>/api/products<br/>/api/alerts<br/>/api/watchlist<br/>/api/targets<br/>/api/bot/token<br/>/api/suppliers"]
+            SPA["📱 SPA (PWA)<br/>Tailwind + vanilla JS<br/>4 таба, service worker"]
+        end
+
+        DB[("💾 SQLite + WAL<br/>wb.sqlite3")]
+        Tables["products • price_snapshots<br/>alerts • watchlist<br/>target_prices<br/>tracked_suppliers<br/>app_settings<br/>subscribers • mutes"]
+    end
+
+    Collector -->|"запрос со<br/>списком supplier-IDs"| CFFI
+    CFFI -->|HTTPS| Tunnel
+    Tunnel -.->|"подключение через"| VPNGate
+    Tunnel -->|"туннель с RU/JP IP"| WB
+    WB -->|"JSON: products,<br/>цены, supplier"| CFFI
+    CFFI -->|снимки| Collector
+    Collector -->|UPSERT| DB
+
+    Collector --> Detector
+    Detector -->|читает историю 24ч| DB
+    Detector -.->|"DropEvent<br/>(median / target)"| Bot
+    Bot -->|"sendMessage + HTML"| TG
+    TG -->|"getUpdates (long-poll)"| Bot
+    Bot -->|"subscribers, mutes, chat_id"| DB
+
+    User -->|"http://localhost:8000"| WebAPI
+    WebAPI -->|CRUD| DB
+    WebAPI -->|"index.html + /static"| SPA
+    SPA -.->|"fetch /api/*"| WebAPI
+    SPA -->|"тап /start в Telegram"| TG
+
+    User -->|"вставил токен<br/>→ POST /api/bot/token"| WebAPI
+    WebAPI -->|"перезапуск polling-task"| Bot
+    WebAPI -->|"сохранил в app_settings"| DB
+
+    Process -.->|"git push"| GH
+    GH -.->|"git clone на новой машине"| Process
+
+    DB --- Tables
+```
+
+### Что происходит за один тик коллектора
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Tmr as ⏱ Таймер 30 мин
+    participant Col as Collector
+    participant DB as SQLite
+    participant CFFI as curl_cffi
+    participant VPN as Tunnelblick
+    participant WB as Wildberries
+    participant Det as Detector
+    participant Bot as Bot
+    participant TG as Telegram API
+
+    Tmr->>Col: tick()
+    Col->>DB: SELECT supplier_id<br/>FROM tracked_suppliers WHERE active=1
+    DB-->>Col: [250090328, 560794641]
+
+    loop по каждому supplier
+        Col->>CFFI: GET sellers/v4/catalog?supplier=...
+        CFFI->>VPN: HTTPS через туннель
+        VPN->>WB: с RU/JP IP, TLS Chrome 124
+        alt WAF доволен
+            WB-->>VPN: 200 OK + JSON
+            VPN-->>CFFI: products[]
+            CFFI-->>Col: список товаров
+        else 429 Too Many Requests
+            WB-->>CFFI: 429
+            Note over CFFI: backoff 4с / 16с / 64с / 256с
+            CFFI->>WB: повтор
+        end
+        Col->>DB: UPSERT products<br/>INSERT price_snapshots
+    end
+
+    Col->>Det: проверь каждый товар
+    loop по каждому nm_id
+        Det->>DB: SELECT sale_price<br/>FROM price_snapshots<br/>WHERE ts >= now - 24ч
+        DB-->>Det: история цен
+        Det->>DB: SELECT target_price<br/>WHERE nm_id=?
+        alt дроп ≥ 10% от медианы<br/>или цена ≤ target
+            Det->>DB: INSERT alerts (kind)
+            Det->>Bot: DropEvent
+            Bot->>DB: SELECT tg_user_id<br/>FROM subscribers WHERE active=1
+            loop по подписчикам
+                Bot->>TG: sendMessage(chat_id, текст)
+                TG-->>Bot: 200 OK
+            end
+        end
+    end
+```
+
 ## Как работает (обход анти-бота)
 
 WB защищает свой каталог от парсинга:
