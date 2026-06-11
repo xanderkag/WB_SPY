@@ -38,7 +38,7 @@ SQLite хватает с запасом.
 
 sha256 снимка:
 ```
-f8db7dcbb1d4fdcf78ecb6ab81d75abf5636f59577816d5d7f785970f80ae849  wb-export.sqlite3
+d8e4f37dc14fdb07185b6af84b3505608dc3fa6cb3850ccc592b1dfc83475fb7  wb-export.sqlite3
 ```
 
 ## ⚠️ Почему НЕ копировать `wb.sqlite3` напрямую
