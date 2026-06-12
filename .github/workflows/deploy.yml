@@ -55,9 +55,9 @@ jobs:
           WB_DEST=-1257786
           DB_PATH=/data/wb.sqlite3
           POLL_INTERVAL_SECONDS=1800
-          USE_CURL_CFFI=0
+          USE_CURL_CFFI=1
           USE_PLAYWRIGHT=0
-          PROXY_URL=
+          PROXY_URL=http://vpn-proxy:8118
           DROP_THRESHOLD_PCT=10
           DROP_WINDOW_HOURS=24
           DROP_DEDUP_HOURS=6
@@ -106,7 +106,7 @@ jobs:
         run: |
           ssh -i ~/.ssh/asha -o StrictHostKeyChecking=accept-new -p 22 root@"$HOST" 'bash -se' <<'REMOTE'
           set +e
-          NGINX=$(docker ps --format '{{.Names}}' | grep -iE 'nginx|proxy' | head -1)
+          NGINX=$(docker ps --format '{{.Names}}' | grep -iE 'shared-nginx' | head -1)
           echo "nginx container: ${NGINX:-<none>}"
           [ -z "$NGINX" ] && exit 0
           docker inspect "$NGINX" --format '{{range .Mounts}}{{.Source}} -> {{.Destination}}{{println}}{{end}}'
