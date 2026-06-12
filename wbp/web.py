@@ -210,6 +210,16 @@ def _db() -> sqlite3.Connection:
             db.commit()
         except Exception as e:
             print("schema apply warn:", e)
+        # мягкие ALTER'ы (то же что в db._migrate_initial_suppliers)
+        for alter in (
+            "ALTER TABLE alerts ADD COLUMN kind TEXT DEFAULT 'median'",
+            "ALTER TABLE tracked_suppliers ADD COLUMN idle_ticks INTEGER NOT NULL DEFAULT 0",
+            "ALTER TABLE tracked_suppliers ADD COLUMN last_check_ts INTEGER",
+        ):
+            try:
+                db.execute(alter); db.commit()
+            except Exception:
+                pass
         # одноразовая миграция: если tracked_suppliers пустой — заливаем из config.
         try:
             from .config import WB_SELF_SUPPLIER_IDS
@@ -476,10 +486,123 @@ def api_alerts(limit: int = 50):
     return {"items": items}
 
 
+# ---------- universal resolver: URL / id → что это и как живой ----------
+
+def _parse_wb_input(raw: str) -> dict:
+    """Распознаёт что юзер ввёл: supplierId, nm_id или WB-URL.
+    Возвращает {kind: 'supplier'|'item', id: int} или {kind: None}.
+    Принимает:
+      - /seller/250090328 (или полный URL)
+      - /catalog/915921239/detail.aspx
+      - голые числа: 6-9 цифр → supplier, 8-10 цифр и больше → item (эвристика)
+    """
+    import re
+    s = (raw or "").strip()
+    if not s:
+        return {"kind": None}
+    # URL /seller/<id>
+    m = re.search(r"/seller/(\d+)", s)
+    if m:
+        return {"kind": "supplier", "id": int(m.group(1))}
+    # URL /catalog/<nm>/detail.aspx
+    m = re.search(r"/catalog/(\d+)/detail", s)
+    if m:
+        return {"kind": "item", "id": int(m.group(1))}
+    # голое число — эвристика по длине, item > supplier по типичной разрядности
+    if re.fullmatch(r"\d+", s):
+        n = int(s)
+        # nm_id у современных товаров 8-10 цифр (миллионы-миллиарды);
+        # supplierId обычно 6-9 цифр и реже превышает 1e9
+        if n >= 100_000_000:
+            return {"kind": "item", "id": n}
+        return {"kind": "supplier", "id": n}
+    return {"kind": None}
+
+
+class ResolveIn(BaseModel):
+    input: str = Field(..., min_length=1)
+
+
+@app.post("/api/resolve")
+async def api_resolve(body: ResolveIn):
+    """Универсальный резолвер для формы добавления.
+    Принимает URL или id, понимает что это (supplier/item), делает живой запрос
+    к WB и возвращает имя + кол-во товаров (для supplier) или имя/бренд/цену (item)."""
+    parsed = _parse_wb_input(body.input)
+    if not parsed.get("kind"):
+        raise HTTPException(400, "Не распознал — нужен id, URL /seller/... или /catalog/.../detail.aspx")
+
+    kind, oid = parsed["kind"], parsed["id"]
+    out: dict = {"kind": kind, "id": oid, "ok": False}
+
+    # импортируем клиент лениво — в API-only режиме он не нужен на старте
+    from .wb_cffi import WbCffi
+    cffi = await WbCffi.get()
+
+    if kind == "supplier":
+        data = await cffi.fetch_json(
+            "https://catalog.wb.ru/sellers/v4/catalog",
+            params={"appType": 1, "curr": "rub", "dest": -1257786, "page": 1,
+                    "sort": "popular", "spp": 30, "supplier": oid},
+        )
+        prods = (data or {}).get("products") or []
+        if prods:
+            out.update({
+                "ok": True,
+                "name": prods[0].get("supplier") or "—",
+                "products_n": (data.get("total") or len(prods)),
+                "sample": [{"nm_id": p.get("id"), "name": p.get("name"), "brand": p.get("brand")}
+                            for p in prods[:5]],
+            })
+        else:
+            out.update({"ok": False, "warn": "Продавец пустой или не существует — можно сохранить принудительно"})
+        return out
+
+    # item — пробуем разные пути по убыванию надёжности
+    # 1. cards.wb.ru/cards/v2/detail (на проде через VPN может работать)
+    data = await cffi.fetch_json(
+        "https://card.wb.ru/cards/v2/detail",
+        params={"appType": 1, "curr": "rub", "dest": -1257786, "spp": 30, "nm": str(oid)},
+    )
+    prods = ((data or {}).get("data") or {}).get("products") or [] if data else []
+    if not prods:
+        # 2. fallback — проверяем уже в БД
+        with _db() as db:
+            row = db.execute(
+                "SELECT name, brand, supplier_id, supplier_name FROM products WHERE nm_id = ?",
+                (oid,),
+            ).fetchone()
+        if row:
+            out.update({"ok": True, "name": row["name"], "brand": row["brand"],
+                        "supplier_id": row["supplier_id"], "supplier_name": row["supplier_name"],
+                        "source": "db"})
+            return out
+        out.update({"ok": False, "warn": "Не нашёл — можно сохранить принудительно (подхватится когда появится у одного из продавцов)"})
+        return out
+    p = prods[0]
+    sale = (p.get("salePriceU") or 0) / 100 or None
+    out.update({
+        "ok": True,
+        "name": p.get("name"),
+        "brand": p.get("brand"),
+        "supplier_id": p.get("supplierId"),
+        "supplier_name": p.get("supplier"),
+        "current_price": sale,
+        "source": "wb",
+    })
+    return out
+
+
 # ---------- suppliers ----------
 
 class SupplierIn(BaseModel):
-    supplier_id: int = Field(..., gt=0)
+    # принимаем число или URL — резолвится на стороне сервера
+    input: str | None = None
+    supplier_id: int | None = Field(None, gt=0)
+    alias: str | None = None
+
+
+class SupplierPatch(BaseModel):
     alias: str | None = None
 
 
@@ -488,26 +611,48 @@ def api_suppliers():
     with _db() as db:
         rows = db.execute(
             """SELECT t.id, t.supplier_id, t.alias, t.active, t.created_at,
+                      COALESCE(t.idle_ticks, 0)  AS idle_ticks,
+                      t.last_check_ts,
                       (SELECT supplier_name FROM products WHERE supplier_id = t.supplier_id LIMIT 1) AS detected_name,
                       (SELECT COUNT(*) FROM products WHERE supplier_id = t.supplier_id) AS products_n
                FROM tracked_suppliers t
-               ORDER BY t.id"""
+               ORDER BY t.active DESC, t.id"""
         ).fetchall()
     return {"items": [dict(r) for r in rows]}
 
 
 @app.post("/api/suppliers")
 def api_supplier_add(s: SupplierIn):
+    # принимаем URL или id; supplier_id выигрывает если задан явно
+    sid = s.supplier_id
+    if sid is None and s.input:
+        parsed = _parse_wb_input(s.input)
+        if parsed.get("kind") != "supplier":
+            raise HTTPException(400, "Введите supplierId или URL /seller/<id>")
+        sid = parsed["id"]
+    if not sid:
+        raise HTTPException(400, "не задан supplier_id")
     with _db() as db:
         try:
             db.execute(
-                "INSERT INTO tracked_suppliers(supplier_id, alias, active, created_at) "
-                "VALUES (?, ?, 1, ?)",
-                (s.supplier_id, s.alias, int(time.time())),
+                "INSERT INTO tracked_suppliers(supplier_id, alias, active, created_at, idle_ticks) "
+                "VALUES (?, ?, 1, ?, 0)",
+                (sid, s.alias, int(time.time())),
             )
             db.commit()
         except sqlite3.IntegrityError:
             raise HTTPException(409, "уже есть")
+    return {"ok": True, "supplier_id": sid}
+
+
+@app.patch("/api/suppliers/{tid}")
+def api_supplier_patch(tid: int, body: SupplierPatch):
+    with _db() as db:
+        db.execute(
+            "UPDATE tracked_suppliers SET alias = ? WHERE id = ?",
+            (body.alias, tid),
+        )
+        db.commit()
     return {"ok": True}
 
 
@@ -522,9 +667,116 @@ def api_supplier_delete(tid: int):
 @app.post("/api/suppliers/{tid}/toggle")
 def api_supplier_toggle(tid: int):
     with _db() as db:
+        # сброс счётчика простоя при ручной активации
         db.execute(
-            "UPDATE tracked_suppliers SET active = 1 - active WHERE id = ?", (tid,)
+            "UPDATE tracked_suppliers SET active = 1 - active, idle_ticks = 0 WHERE id = ?",
+            (tid,),
         )
+        db.commit()
+    return {"ok": True}
+
+
+@app.get("/api/suppliers/{tid}/items")
+def api_supplier_items(tid: int, limit: int = 50):
+    """Товары конкретного продавца — для раскрытия карточки в админке."""
+    with _db() as db:
+        row = db.execute(
+            "SELECT supplier_id FROM tracked_suppliers WHERE id = ?", (tid,)
+        ).fetchone()
+        if not row:
+            raise HTTPException(404, "не найден")
+        sid = row["supplier_id"]
+        items = db.execute(
+            """SELECT p.nm_id, p.name, p.brand,
+                      (SELECT sale_price FROM price_snapshots WHERE nm_id = p.nm_id ORDER BY ts DESC LIMIT 1) AS last_price
+               FROM products p WHERE p.supplier_id = ?
+               ORDER BY last_price DESC NULLS LAST LIMIT ?""",
+            (sid, limit),
+        ).fetchall()
+    out = []
+    for r in items:
+        d = dict(r)
+        d["img"] = _img(d["nm_id"])
+        d["img_urls"] = _img_urls(d["nm_id"])
+        d["wb_url"] = f"https://www.wildberries.ru/catalog/{d['nm_id']}/detail.aspx"
+        out.append(d)
+    return {"supplier_id": sid, "items": out}
+
+
+# ---------- tracked items (точечные товары) ----------
+
+class TrackedItemIn(BaseModel):
+    input: str | None = None
+    nm_id: int | None = Field(None, gt=0)
+    alias: str | None = None
+
+
+@app.get("/api/items")
+def api_items_list():
+    """Точечные товары + обогащение последней ценой и инфой о продавце."""
+    with _db() as db:
+        rows = db.execute(
+            """SELECT t.nm_id, t.alias, t.supplier_id, t.name, t.brand,
+                      t.active, t.created_at,
+                      (SELECT sale_price FROM price_snapshots WHERE nm_id = t.nm_id ORDER BY ts DESC LIMIT 1) AS last_price,
+                      (SELECT ts FROM price_snapshots WHERE nm_id = t.nm_id ORDER BY ts DESC LIMIT 1) AS last_ts,
+                      (SELECT supplier_name FROM products WHERE nm_id = t.nm_id LIMIT 1) AS supplier_name
+               FROM tracked_items t
+               ORDER BY t.created_at DESC"""
+        ).fetchall()
+    items = []
+    for r in rows:
+        d = dict(r)
+        d["img"] = _img(d["nm_id"])
+        d["img_urls"] = _img_urls(d["nm_id"])
+        d["wb_url"] = f"https://www.wildberries.ru/catalog/{d['nm_id']}/detail.aspx"
+        items.append(d)
+    return {"items": items}
+
+
+@app.post("/api/items")
+async def api_items_add(body: TrackedItemIn):
+    """Добавить точечный товар. Если задан URL — парсим nm_id.
+    После добавления делаем live-resolve, чтобы сразу заполнить name/brand/supplier."""
+    nm = body.nm_id
+    if nm is None and body.input:
+        parsed = _parse_wb_input(body.input)
+        if parsed.get("kind") != "item":
+            raise HTTPException(400, "Введите nm_id или URL /catalog/<nm>/detail.aspx")
+        nm = parsed["id"]
+    if not nm:
+        raise HTTPException(400, "не задан nm_id")
+
+    # пробуем подтянуть метаданные сразу — если получится, сохраним.
+    name = brand = supplier_name = None
+    supplier_id = None
+    try:
+        rs = await api_resolve(ResolveIn(input=str(nm)))
+        if rs.get("ok"):
+            name = rs.get("name")
+            brand = rs.get("brand")
+            supplier_id = rs.get("supplier_id")
+            supplier_name = rs.get("supplier_name")
+    except Exception:
+        pass  # сохраняем без метаданных, заполнятся при следующем тике
+
+    with _db() as db:
+        try:
+            db.execute(
+                """INSERT INTO tracked_items(nm_id, alias, supplier_id, name, brand, active, created_at)
+                   VALUES (?, ?, ?, ?, ?, 1, ?)""",
+                (nm, body.alias, supplier_id, name, brand, int(time.time())),
+            )
+            db.commit()
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, "уже отслеживаем")
+    return {"ok": True, "nm_id": nm, "name": name, "supplier_name": supplier_name}
+
+
+@app.delete("/api/items/{nm_id}")
+def api_items_delete(nm_id: int):
+    with _db() as db:
+        db.execute("DELETE FROM tracked_items WHERE nm_id = ?", (nm_id,))
         db.commit()
     return {"ok": True}
 

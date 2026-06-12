@@ -101,6 +101,19 @@ CREATE TABLE IF NOT EXISTS app_settings (
     updated_at  INTEGER NOT NULL
 );
 
+-- точечные товары: мониторим конкретный nm_id, может вообще не принадлежать
+-- к нашим tracked_suppliers (или мы заранее не знаем продавца).
+-- supplier_id заполняется при первом успешном fetch.
+CREATE TABLE IF NOT EXISTS tracked_items (
+    nm_id        INTEGER PRIMARY KEY,
+    alias        TEXT,
+    supplier_id  INTEGER,
+    name         TEXT,
+    brand        TEXT,
+    active       INTEGER NOT NULL DEFAULT 1,
+    created_at   INTEGER NOT NULL
+);
+
 -- включаем WAL чтобы web и collector не конфликтовали по записи.
 PRAGMA journal_mode=WAL;
 """
@@ -126,13 +139,19 @@ async def get_db() -> aiosqlite.Connection:
 async def _migrate_initial_suppliers(db: aiosqlite.Connection) -> None:
     """Если tracked_suppliers пуст — заливаем туда WB_SELF_SUPPLIER_IDS из config."""
     from .config import WB_SELF_SUPPLIER_IDS
-    # добавляем колонку alerts.kind для отличия median/target — если ещё нет.
-    try:
-        await db.execute("ALTER TABLE alerts ADD COLUMN kind TEXT DEFAULT 'median'")
-        await db.commit()
-        logger.info("миграция: добавлена колонка alerts.kind")
-    except Exception:
-        pass  # колонка уже есть
+    # мягкие ALTER'ы — добавляются один раз, повторный вызов даёт OperationalError.
+    for alter in (
+        "ALTER TABLE alerts ADD COLUMN kind TEXT DEFAULT 'median'",
+        # счётчик подряд пустых тиков, для авто-сна продавца
+        "ALTER TABLE tracked_suppliers ADD COLUMN idle_ticks INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE tracked_suppliers ADD COLUMN last_check_ts INTEGER",
+    ):
+        try:
+            await db.execute(alter)
+            await db.commit()
+            logger.info("миграция: {}", alter[:60])
+        except Exception:
+            pass  # колонка уже есть
     cur = await db.execute("SELECT COUNT(*) AS c FROM tracked_suppliers")
     row = await cur.fetchone()
     if row["c"] > 0 or not WB_SELF_SUPPLIER_IDS:

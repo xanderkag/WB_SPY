@@ -126,6 +126,47 @@
       <div id="st-suppliers" class="space-y-2 text-sm"></div>
     </div>
 
+  </section>
+
+  <!-- VIEW: ADMIN — управление продавцами, точечными товарами, ботом -->
+  <section id="view-admin" class="hidden space-y-4">
+
+    <!-- Universal add (resolver) -->
+    <div class="card rounded-2xl p-4 space-y-3">
+      <div class="text-[11px] uppercase tracking-wider text-slate-400">Добавить продавца или товар</div>
+      <input id="adm-input" placeholder="URL или id: /seller/250090328 или /catalog/915921239/detail.aspx"
+             class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm" />
+      <input id="adm-alias" placeholder="как назвать (необязательно)"
+             class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm" />
+      <div class="flex gap-2">
+        <button id="adm-check-btn" class="flex-1 bg-slate-700 text-slate-100 font-medium rounded-xl py-2 text-sm">Проверить</button>
+        <button id="adm-save-btn" class="flex-1 bg-sky-500 text-slate-950 font-medium rounded-xl py-2 text-sm">Сохранить</button>
+      </div>
+      <div id="adm-resolve" class="hidden card rounded-xl p-3 text-sm space-y-1"></div>
+      <div class="text-[10px] text-slate-500">
+        Принимает URL продавца, URL товара, или голое число. Кнопка «Проверить» делает живой запрос к WB.
+      </div>
+    </div>
+
+    <!-- Suppliers -->
+    <div class="card rounded-2xl p-4 space-y-3">
+      <div class="flex items-center justify-between">
+        <div class="text-[11px] uppercase tracking-wider text-slate-400">Продавцы</div>
+        <div class="text-[10px] text-slate-500">тап на карточку → товары</div>
+      </div>
+      <div id="adm-sup-list" class="space-y-2 text-sm"></div>
+    </div>
+
+    <!-- Tracked items -->
+    <div class="card rounded-2xl p-4 space-y-3">
+      <div class="text-[11px] uppercase tracking-wider text-slate-400">Точечные товары</div>
+      <div id="adm-items-list" class="space-y-2 text-sm"></div>
+      <div id="adm-items-empty" class="hidden text-xs text-slate-500">
+        Пока нет. Добавь через форму выше — впиши URL товара (<code>/catalog/&lt;nm&gt;/detail.aspx</code>).
+      </div>
+    </div>
+
+    <!-- Telegram bot (переехал из «Статуса») -->
     <div class="card rounded-2xl p-4 space-y-3">
       <div class="flex items-center justify-between">
         <div class="text-[11px] uppercase tracking-wider text-slate-400">Telegram-бот</div>
@@ -150,45 +191,31 @@
       <div id="bot-error" class="hidden text-xs text-red-400"></div>
     </div>
 
-    <div class="card rounded-2xl p-4 space-y-3">
-      <div class="flex items-center justify-between">
-        <div class="text-[11px] uppercase tracking-wider text-slate-400">Мониторим продавцов</div>
-        <button id="sup-add-btn" class="text-xs text-sky-400">+ добавить</button>
-      </div>
-      <div id="sup-form" class="hidden space-y-2">
-        <input id="sup-input-id" inputmode="numeric" placeholder="supplierId (число из /seller/...)"
-               class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm" />
-        <input id="sup-input-alias" placeholder="как назвать (необязательно)"
-               class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-sm" />
-        <div class="flex gap-2">
-          <button id="sup-save-btn" class="flex-1 bg-sky-500 text-slate-950 font-medium rounded-xl py-2 text-sm">Добавить</button>
-          <button id="sup-cancel-btn" class="bg-slate-800 text-slate-300 rounded-xl py-2 px-4 text-sm">Отмена</button>
-        </div>
-      </div>
-      <div id="sup-list" class="space-y-2 text-sm"></div>
-      <div class="text-[10px] text-slate-500">Изменения подхватятся со следующего тика парсера (≤30 мин).</div>
-    </div>
   </section>
 </main>
 
 <!-- BOTTOM TAB BAR -->
 <nav class="fixed bottom-0 left-0 right-0 z-40 bg-slate-950/95 backdrop-blur border-t border-slate-800"
      style="padding-bottom: env(safe-area-inset-bottom);">
-  <div class="max-w-3xl mx-auto grid grid-cols-4">
-    <button class="tab py-3 text-[10px] uppercase tracking-widest tab-active" data-view="alerts">
-      <div class="text-xl leading-none">📉</div>
+  <div class="max-w-3xl mx-auto grid grid-cols-5">
+    <button class="tab py-3 text-[9px] uppercase tracking-wider tab-active" data-view="alerts">
+      <div class="text-lg leading-none">📉</div>
       <div class="mt-1">Дропы</div>
     </button>
-    <button class="tab py-3 text-[10px] uppercase tracking-widest text-slate-400" data-view="catalog">
-      <div class="text-xl leading-none">📦</div>
+    <button class="tab py-3 text-[9px] uppercase tracking-wider text-slate-400" data-view="catalog">
+      <div class="text-lg leading-none">📦</div>
       <div class="mt-1">Каталог</div>
     </button>
-    <button class="tab py-3 text-[10px] uppercase tracking-widest text-slate-400" data-view="watch">
-      <div class="text-xl leading-none">★</div>
+    <button class="tab py-3 text-[9px] uppercase tracking-wider text-slate-400" data-view="watch">
+      <div class="text-lg leading-none">★</div>
       <div class="mt-1">Мои</div>
     </button>
-    <button class="tab py-3 text-[10px] uppercase tracking-widest text-slate-400" data-view="stats">
-      <div class="text-xl leading-none">📊</div>
+    <button class="tab py-3 text-[9px] uppercase tracking-wider text-slate-400" data-view="admin">
+      <div class="text-lg leading-none">⚙️</div>
+      <div class="mt-1">Админ</div>
+    </button>
+    <button class="tab py-3 text-[9px] uppercase tracking-wider text-slate-400" data-view="stats">
+      <div class="text-lg leading-none">📊</div>
       <div class="mt-1">Статус</div>
     </button>
   </div>
@@ -274,7 +301,7 @@ function setView(v) {
     t.classList.toggle('tab-active', t.dataset.view === v);
     t.classList.toggle('text-slate-400', t.dataset.view !== v);
   });
-  const titles = {alerts:'Дропы', catalog:'Каталог', watch:'★ Мои', stats:'Статус'};
+  const titles = {alerts:'Дропы', catalog:'Каталог', watch:'★ Мои', admin:'⚙️ Админ', stats:'Статус'};
   document.getElementById('hdr-title').textContent = titles[v];
   refresh();
 }
@@ -312,7 +339,8 @@ async function refresh() {
   if (currentView === 'alerts') return loadAlerts();
   if (currentView === 'catalog') return loadCatalog();
   if (currentView === 'watch')   return loadWatchlist();
-  if (currentView === 'stats')   { loadStats(); loadSuppliers(); loadBot(); return; }
+  if (currentView === 'admin')   { loadAdminSuppliers(); loadAdminItems(); loadBot(); return; }
+  if (currentView === 'stats')   { loadStats(); return; }
 }
 
 async function loadStatusHeader() {
@@ -625,8 +653,86 @@ document.getElementById('bot-clear-btn').addEventListener('click', async () => {
   loadBot();
 });
 
-async function loadSuppliers() {
-  const el = document.getElementById('sup-list');
+// ─── ADMIN: универсальный резолвер ────────────────────────────────────
+let _lastResolve = null;  // {kind, id, name, ...} — заполняется после «Проверить»
+
+async function adminResolve(showResult = true) {
+  const input = document.getElementById('adm-input').value.trim();
+  if (!input) { showToast('Впиши URL или id', 'info'); return null; }
+  const box = document.getElementById('adm-resolve');
+  if (showResult) {
+    box.classList.remove('hidden');
+    box.innerHTML = '<div class="text-slate-500">проверяю в WB…</div>';
+  }
+  try {
+    const r = await fetch('/api/resolve', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input }),
+    });
+    const j = await r.json();
+    if (!r.ok) {
+      box.innerHTML = `<div class="text-red-400">⚠ ${escape(j.detail || 'ошибка')}</div>`;
+      return null;
+    }
+    _lastResolve = j;
+    if (showResult) {
+      const kindLabel = j.kind === 'supplier' ? '🏬 продавец' : '📦 товар';
+      let lines = [
+        `<div class="text-slate-200 font-medium">${kindLabel} <span class="text-slate-500">#${j.id}</span></div>`,
+      ];
+      if (j.ok) {
+        if (j.kind === 'supplier') {
+          lines.push(`<div class="text-emerald-300">✓ ${escape(j.name||'')} (~${j.products_n||0} товаров)</div>`);
+        } else {
+          lines.push(`<div class="text-emerald-300">✓ ${escape(j.brand||'')} ${escape((j.name||'').slice(0,60))}</div>`);
+          if (j.supplier_name) lines.push(`<div class="text-[11px] text-slate-500">у продавца «${escape(j.supplier_name)}» #${j.supplier_id||''}</div>`);
+          if (j.current_price) lines.push(`<div class="text-[11px] text-slate-500">текущая цена: ${fmt(j.current_price)}</div>`);
+        }
+      } else {
+        lines.push(`<div class="text-amber-400">⚠ ${escape(j.warn||'не нашли')}</div>`);
+      }
+      box.innerHTML = lines.join('');
+    }
+    return j;
+  } catch (e) {
+    box.innerHTML = `<div class="text-red-400">⚠ ${escape(String(e))}</div>`;
+    return null;
+  }
+}
+
+async function adminSave() {
+  let parsed = _lastResolve;
+  if (!parsed) parsed = await adminResolve(false);
+  if (!parsed || !parsed.kind) return;
+  const alias = document.getElementById('adm-alias').value.trim() || null;
+  const url = parsed.kind === 'supplier' ? '/api/suppliers' : '/api/items';
+  const body = parsed.kind === 'supplier'
+    ? { supplier_id: parsed.id, alias }
+    : { nm_id: parsed.id, alias };
+  const r = await fetch(url, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (r.ok) {
+    const what = parsed.kind === 'supplier' ? 'продавец' : 'товар';
+    showToast(`✓ Добавлен ${what} #${parsed.id}`, 'info');
+    document.getElementById('adm-input').value = '';
+    document.getElementById('adm-alias').value = '';
+    document.getElementById('adm-resolve').classList.add('hidden');
+    _lastResolve = null;
+    loadAdminSuppliers(); loadAdminItems();
+  } else {
+    const j = await r.json().catch(() => ({}));
+    showToast(j.detail || 'Не удалось сохранить', 'info');
+  }
+}
+
+document.getElementById('adm-check-btn').addEventListener('click', () => adminResolve(true));
+document.getElementById('adm-save-btn').addEventListener('click', adminSave);
+
+// ─── ADMIN: продавцы с раскрытием в товары ────────────────────────────
+async function loadAdminSuppliers() {
+  const el = document.getElementById('adm-sup-list');
   el.innerHTML = '<div class="text-slate-500">загрузка…</div>';
   const j = await (await fetch('/api/suppliers')).json();
   if (!j.items.length) {
@@ -634,62 +740,94 @@ async function loadSuppliers() {
     return;
   }
   el.innerHTML = j.items.map(s => {
-    const ghost = (s.products_n || 0) === 0;   // активен, но каталог пустой
+    const ghost = (s.products_n || 0) === 0;
     const label = s.alias || s.detected_name || (ghost ? 'неизвестный' : '—');
     const onoff = !s.active
       ? '<span class="text-slate-600">○</span>'
       : (ghost ? '<span class="text-slate-500">👻</span>' : '<span class="text-emerald-400">●</span>');
     const sub = ghost
       ? '<span class="text-amber-500/80">спит — каталог пуст</span>'
-      : `${s.products_n} товаров в БД`;
+      : `${s.products_n} товаров`;
+    const idle = s.idle_ticks ? `<span class="text-[10px] text-slate-600 ml-2">idle: ${s.idle_ticks}</span>` : '';
     return `
-      <div class="flex items-center justify-between gap-2 py-1">
-        <div class="min-w-0">
-          <div class="truncate text-slate-200">${onoff} ${escape(label)} <span class="text-slate-500">#${s.supplier_id}</span></div>
-          <div class="text-[10px] text-slate-500">${sub}</div>
+      <div class="rounded-xl border border-slate-800">
+        <div class="flex items-center justify-between gap-2 p-2">
+          <div class="min-w-0 flex-1 cursor-pointer" onclick="toggleSupItems(${s.id}, this)">
+            <div class="truncate text-slate-200">${onoff} ${escape(label)} <span class="text-slate-500">#${s.supplier_id}</span></div>
+            <div class="text-[10px] text-slate-500">${sub}${idle}</div>
+          </div>
+          <div class="flex gap-2 shrink-0 text-xs">
+            <button onclick="toggleSupplier(${s.id})" class="text-sky-400">${s.active?'выкл':'вкл'}</button>
+            <button onclick="deleteSupplier(${s.id})" class="text-red-400">×</button>
+          </div>
         </div>
-        <div class="flex gap-2 shrink-0">
-          <button onclick="toggleSupplier(${s.id})" class="text-xs text-sky-400">${s.active?'выкл':'вкл'}</button>
-          <button onclick="deleteSupplier(${s.id})" class="text-xs text-red-400">×</button>
-        </div>
+        <div id="sup-items-${s.id}" class="hidden border-t border-slate-800 p-2 space-y-1"></div>
       </div>`;
   }).join('');
 }
 
 window.toggleSupplier = async function(id) {
   await fetch(`/api/suppliers/${id}/toggle`, { method: 'POST' });
-  loadSuppliers();
+  loadAdminSuppliers();
 };
 window.deleteSupplier = async function(id) {
   if (!confirm('Удалить продавца из мониторинга?')) return;
   await fetch(`/api/suppliers/${id}`, { method: 'DELETE' });
-  loadSuppliers();
+  loadAdminSuppliers();
 };
-document.getElementById('sup-add-btn').addEventListener('click', () => {
-  document.getElementById('sup-form').classList.toggle('hidden');
-  document.getElementById('sup-input-id').focus();
-});
-document.getElementById('sup-cancel-btn').addEventListener('click', () => {
-  document.getElementById('sup-form').classList.add('hidden');
-});
-document.getElementById('sup-save-btn').addEventListener('click', async () => {
-  const id = parseInt(document.getElementById('sup-input-id').value, 10);
-  const alias = document.getElementById('sup-input-alias').value.trim();
-  if (!id) { showToast('Нужен числовой supplierId', 'info'); return; }
-  const r = await fetch('/api/suppliers', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ supplier_id: id, alias: alias || null }),
-  });
-  if (r.ok) {
-    showToast(`Добавлен supplier #${id}`, 'info');
-    document.getElementById('sup-input-id').value = '';
-    document.getElementById('sup-input-alias').value = '';
-    document.getElementById('sup-form').classList.add('hidden');
-    loadSuppliers();
-  } else {
-    showToast('Не удалось добавить (возможно, уже есть)', 'info');
+
+window.toggleSupItems = async function(tid, headerEl) {
+  const box = document.getElementById(`sup-items-${tid}`);
+  if (!box.classList.contains('hidden')) { box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  box.innerHTML = '<div class="text-[11px] text-slate-500">загрузка…</div>';
+  const j = await (await fetch(`/api/suppliers/${tid}/items?limit=20`)).json();
+  if (!j.items.length) {
+    box.innerHTML = '<div class="text-[11px] text-slate-500">пусто</div>';
+    return;
   }
-});
+  box.innerHTML = j.items.map(it => `
+    <div class="flex items-center gap-2 text-[12px] cursor-pointer hover:bg-slate-800/50 rounded px-1 py-0.5"
+         onclick="openDetail(${it.nm_id})">
+      <span class="text-slate-500 shrink-0 w-12 text-right tabular-nums">${it.last_price ? fmt(it.last_price).replace(/ ₽/, '') : '—'}</span>
+      <span class="text-slate-400 shrink-0 w-12 truncate">${escape(it.brand||'')}</span>
+      <span class="text-slate-200 truncate">${escape(it.name||'')}</span>
+    </div>
+  `).join('');
+};
+
+// ─── ADMIN: точечные товары ───────────────────────────────────────────
+async function loadAdminItems() {
+  const el = document.getElementById('adm-items-list');
+  const empty = document.getElementById('adm-items-empty');
+  el.innerHTML = '<div class="text-slate-500">загрузка…</div>';
+  const j = await (await fetch('/api/items')).json();
+  if (!j.items.length) {
+    el.innerHTML = '';
+    empty.classList.remove('hidden');
+    return;
+  }
+  empty.classList.add('hidden');
+  el.innerHTML = j.items.map(it => {
+    const label = it.alias || it.name || `nm=${it.nm_id}`;
+    const sub = [it.brand, it.supplier_name, it.last_price ? fmt(it.last_price) : null]
+      .filter(Boolean).join(' · ');
+    return `
+      <div class="flex items-center justify-between gap-2 py-1 rounded-lg hover:bg-slate-800/40 px-1">
+        <div class="min-w-0 flex-1 cursor-pointer" onclick="openDetail(${it.nm_id})">
+          <div class="truncate text-slate-200 text-sm">${escape(label)} <span class="text-slate-500">#${it.nm_id}</span></div>
+          <div class="text-[10px] text-slate-500 truncate">${escape(sub)}</div>
+        </div>
+        <button onclick="event.stopPropagation();deleteTrackedItem(${it.nm_id})" class="text-xs text-red-400">×</button>
+      </div>`;
+  }).join('');
+}
+
+window.deleteTrackedItem = async function(nm) {
+  if (!confirm('Снять товар с отслеживания?')) return;
+  await fetch(`/api/items/${nm}`, { method: 'DELETE' });
+  loadAdminItems();
+};
 
 async function loadStats() {
   const s = await (await fetch('/api/stats')).json();

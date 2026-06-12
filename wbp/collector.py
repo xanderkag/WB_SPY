@@ -156,6 +156,10 @@ async def collector_tick(on_alert: AlertCallback) -> None:
     # добавить/убрать продавца, и со следующего тика парсер это подхватит.
     supplier_ids = await db.active_supplier_ids()
 
+    # auto-sleep: после AUTO_SLEEP_IDLE_TICKS пустых тиков подряд продавец гасится.
+    # 48 тиков × 30 мин ≈ сутки молчания → отключаем чтобы не молотить впустую.
+    AUTO_SLEEP_IDLE_TICKS = 48
+
     async with WbClient() as wb:
         if supplier_ids:
             logger.info("режим: supplier ({} suppliers — один запрос на каждого)",
@@ -167,6 +171,31 @@ async def collector_tick(on_alert: AlertCallback) -> None:
                     total_drops += d
                 except Exception as e:
                     logger.exception("supplier={} failed: {}", supplier_id, e)
+                    continue
+                # обновляем idle-счётчик в БД: 0 при успехе, +1 при пустом ответе.
+                try:
+                    conn = await db.get_db()
+                    if s == 0:
+                        await conn.execute(
+                            "UPDATE tracked_suppliers SET idle_ticks = COALESCE(idle_ticks,0) + 1, "
+                            "last_check_ts = ? WHERE supplier_id = ?",
+                            (int(time.time()), supplier_id),
+                        )
+                        # авто-сон если перевалили порог
+                        await conn.execute(
+                            "UPDATE tracked_suppliers SET active = 0 "
+                            "WHERE supplier_id = ? AND COALESCE(idle_ticks,0) >= ?",
+                            (supplier_id, AUTO_SLEEP_IDLE_TICKS),
+                        )
+                    else:
+                        await conn.execute(
+                            "UPDATE tracked_suppliers SET idle_ticks = 0, last_check_ts = ? "
+                            "WHERE supplier_id = ?",
+                            (int(time.time()), supplier_id),
+                        )
+                    await conn.commit()
+                except Exception as e:
+                    logger.warning("idle-counter update failed: {}", e)
         else:
             logger.info("режим: discovery — обход {} категорий целиком "
                         "(supplier IDs не заданы)", len(CATEGORIES))
