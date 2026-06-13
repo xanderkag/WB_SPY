@@ -407,6 +407,50 @@ async def effective_bot_token() -> str | None:
     return from_db or (settings.tg_bot_token or None)
 
 
+# ─── runtime-настройки детектора (БД → env) ───────────────────────────
+# Все ключи которые юзер может менять через UI, и их типы.
+DETECTOR_KEYS = {
+    "drop_threshold_pct":    ("drop_threshold_pct",    float),
+    "drop_window_hours":     ("drop_window_hours",     int),
+    "drop_dedup_hours":      ("drop_dedup_hours",      int),
+    "drop_min_points":       ("drop_min_points",       int),
+    "poll_interval_seconds": ("poll_interval_seconds", int),
+}
+
+_settings_cache: dict[str, float | int] = {}
+_settings_cache_ts: float = 0
+
+
+async def get_detector_settings(force: bool = False) -> dict[str, float | int]:
+    """Кэшируется на 30 секунд — на тике это норм, на UI достаточно свежо.
+    Каждое значение: БД (app_settings) → .env (config.settings) → дефолт."""
+    global _settings_cache, _settings_cache_ts
+    now = time.time()
+    if not force and (now - _settings_cache_ts < 30) and _settings_cache:
+        return _settings_cache
+    db = await get_db()
+    out: dict[str, float | int] = {}
+    for key, (env_attr, typ) in DETECTOR_KEYS.items():
+        env_default = getattr(settings, env_attr)
+        async with db.execute("SELECT value FROM app_settings WHERE key = ?", (key,)) as cur:
+            row = await cur.fetchone()
+        val = env_default
+        if row and row["value"] not in (None, ""):
+            try:
+                val = typ(row["value"])
+            except (ValueError, TypeError):
+                val = env_default
+        out[key] = val
+    _settings_cache = out
+    _settings_cache_ts = now
+    return out
+
+
+def invalidate_settings_cache() -> None:
+    global _settings_cache_ts
+    _settings_cache_ts = 0
+
+
 async def active_supplier_ids() -> list[int]:
     """Источник правды для collector — что мониторим прямо сейчас."""
     db = await get_db()

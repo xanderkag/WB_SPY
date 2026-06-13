@@ -223,4 +223,10 @@ async def run_collector_loop(on_alert: AlertCallback) -> None:
             await collector_tick(on_alert)
         except Exception as e:
             logger.exception("collector_tick crashed: {}", e)
-        await asyncio.sleep(settings.poll_interval_seconds)
+        # интервал сна берём из настроек (БД → env), на лету подхватываем UI-смены
+        try:
+            s = await db.get_detector_settings(force=True)
+            sleep_secs = int(s["poll_interval_seconds"])
+        except Exception:
+            sleep_secs = settings.poll_interval_seconds
+        await asyncio.sleep(sleep_secs)

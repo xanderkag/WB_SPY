@@ -166,6 +166,55 @@
       </div>
     </div>
 
+    <!-- Detector settings -->
+    <div class="card rounded-2xl p-4 space-y-3">
+      <div class="flex items-center justify-between">
+        <div class="text-[11px] uppercase tracking-wider text-slate-400">Настройки детектора</div>
+        <div id="set-source" class="text-[10px] text-slate-500"></div>
+      </div>
+      <div class="space-y-3 text-sm">
+        <div>
+          <label class="flex items-center justify-between text-slate-400 text-xs mb-1">
+            <span>Порог падения</span><span id="set-pct-val" class="text-amber-300 font-medium">10%</span>
+          </label>
+          <input id="set-pct" type="range" min="1" max="30" step="0.5" value="10"
+                 class="w-full accent-amber-400" />
+          <div class="text-[10px] text-slate-500">алёрт если цена ≤ медианы × (1 − N%)</div>
+        </div>
+        <div class="grid grid-cols-3 gap-2">
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">окно, ч</label>
+            <input id="set-window" type="number" min="1" max="168" value="24"
+                   class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-sm tabular-nums" />
+          </div>
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">дедуп, ч</label>
+            <input id="set-dedup" type="number" min="0" max="48" value="6"
+                   class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-sm tabular-nums" />
+          </div>
+          <div>
+            <label class="block text-[10px] text-slate-500 mb-0.5">мин. точек</label>
+            <input id="set-minpts" type="number" min="1" max="200" value="6"
+                   class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-sm tabular-nums" />
+          </div>
+        </div>
+        <div>
+          <label class="block text-[10px] text-slate-500 mb-0.5">опрос WB каждые, сек</label>
+          <input id="set-poll" type="number" min="60" max="86400" step="60" value="1800"
+                 class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2 py-1 text-sm tabular-nums" />
+        </div>
+      </div>
+      <div id="set-preview" class="text-[11px] text-slate-400 italic"></div>
+      <div class="flex gap-2">
+        <button id="set-save" class="flex-1 bg-sky-500 text-slate-950 font-medium rounded-xl py-2 text-sm">Сохранить</button>
+        <button id="set-reset" class="bg-slate-800 text-slate-300 rounded-xl py-2 px-4 text-sm">Сброс</button>
+      </div>
+      <div class="text-[10px] text-slate-500">
+        Apple-сегмент обычно колеблется на 1–3%. Порог 10% дефолтный — для распродаж.
+        Для будничного «дёрни когда падает» поставь 2–4%.
+      </div>
+    </div>
+
     <!-- Telegram bot (переехал из «Статуса») -->
     <div class="card rounded-2xl p-4 space-y-3">
       <div class="flex items-center justify-between">
@@ -339,7 +388,7 @@ async function refresh() {
   if (currentView === 'alerts') return loadAlerts();
   if (currentView === 'catalog') return loadCatalog();
   if (currentView === 'watch')   return loadWatchlist();
-  if (currentView === 'admin')   { loadAdminSuppliers(); loadAdminItems(); loadBot(); return; }
+  if (currentView === 'admin')   { loadAdminSuppliers(); loadAdminItems(); loadBot(); loadSettings(); return; }
   if (currentView === 'stats')   { loadStats(); return; }
 }
 
@@ -828,6 +877,95 @@ window.deleteTrackedItem = async function(nm) {
   await fetch(`/api/items/${nm}`, { method: 'DELETE' });
   loadAdminItems();
 };
+
+// ─── ADMIN: настройки детектора ────────────────────────────────────────
+async function loadSettings() {
+  const s = await (await fetch('/api/settings')).json();
+  const e = s.effective || {};
+  document.getElementById('set-pct').value = e.drop_threshold_pct ?? 10;
+  document.getElementById('set-pct-val').textContent = (e.drop_threshold_pct ?? 10) + '%';
+  document.getElementById('set-window').value = e.drop_window_hours ?? 24;
+  document.getElementById('set-dedup').value = e.drop_dedup_hours ?? 6;
+  document.getElementById('set-minpts').value = e.drop_min_points ?? 6;
+  document.getElementById('set-poll').value = e.poll_interval_seconds ?? 1800;
+
+  // показываем источник для каждого: db (синий) / env (серый)
+  const srcs = s.sources || {};
+  const dbCount = Object.values(srcs).filter(v => v === 'db').length;
+  const totalKeys = Object.keys(srcs).length || 5;
+  const srcEl = document.getElementById('set-source');
+  if (dbCount === 0) {
+    srcEl.innerHTML = '<span class="text-slate-500">все из .env</span>';
+  } else if (dbCount === totalKeys) {
+    srcEl.innerHTML = '<span class="text-sky-400">все из БД</span>';
+  } else {
+    srcEl.innerHTML = `<span class="text-sky-400">${dbCount}</span><span class="text-slate-500">/${totalKeys} из БД</span>`;
+  }
+  updatePreview();
+}
+
+let _previewTimer;
+function updatePreview() {
+  const el = document.getElementById('set-preview');
+  el.textContent = 'считаю симуляцию…';
+  clearTimeout(_previewTimer);
+  _previewTimer = setTimeout(async () => {
+    const pct = parseFloat(document.getElementById('set-pct').value);
+    const win = parseInt(document.getElementById('set-window').value, 10);
+    const pts = parseInt(document.getElementById('set-minpts').value, 10);
+    if (!pct || !win || !pts) { el.textContent = ''; return; }
+    try {
+      const r = await fetch(`/api/settings/preview?threshold_pct=${pct}&window_hours=${win}&min_points=${pts}`);
+      const j = await r.json();
+      const wa = j.would_alert ?? 0;
+      const total = j.nm_total ?? 0;
+      const days = j.days_analyzed ?? 7;
+      if (total === 0) {
+        el.innerHTML = `<span class="text-slate-500">истории за ${days} дней пока нет — симуляция пуста</span>`;
+      } else {
+        el.innerHTML = `Симуляция за ${days} дней: <span class="text-amber-300 font-medium">${wa}</span> товаров получили бы алёрт (из ${total} с историей).`;
+      }
+    } catch (e) { el.textContent = ''; }
+  }, 350);
+}
+
+document.getElementById('set-pct').addEventListener('input', (e) => {
+  document.getElementById('set-pct-val').textContent = e.target.value + '%';
+  updatePreview();
+});
+['set-window', 'set-dedup', 'set-minpts'].forEach(id =>
+  document.getElementById(id).addEventListener('input', updatePreview)
+);
+
+document.getElementById('set-save').addEventListener('click', async () => {
+  const body = {
+    drop_threshold_pct: parseFloat(document.getElementById('set-pct').value),
+    drop_window_hours: parseInt(document.getElementById('set-window').value, 10),
+    drop_dedup_hours: parseInt(document.getElementById('set-dedup').value, 10),
+    drop_min_points: parseInt(document.getElementById('set-minpts').value, 10),
+    poll_interval_seconds: parseInt(document.getElementById('set-poll').value, 10),
+  };
+  const r = await fetch('/api/settings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (r.ok) {
+    showToast('✓ Настройки сохранены — подхватятся со следующего тика', 'info');
+    loadSettings();
+  } else {
+    showToast('Не удалось сохранить', 'info');
+  }
+});
+
+document.getElementById('set-reset').addEventListener('click', async () => {
+  if (!confirm('Сбросить все override и вернуться к .env-дефолтам?')) return;
+  for (const k of ['drop_threshold_pct', 'drop_window_hours', 'drop_dedup_hours',
+                   'drop_min_points', 'poll_interval_seconds']) {
+    await fetch(`/api/settings/${k}`, { method: 'DELETE' });
+  }
+  showToast('Сброшено к дефолтам', 'info');
+  loadSettings();
+});
 
 async function loadStats() {
   const s = await (await fetch('/api/stats')).json();

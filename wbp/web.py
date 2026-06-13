@@ -781,6 +781,117 @@ def api_items_delete(nm_id: int):
     return {"ok": True}
 
 
+# ---------- runtime settings (детектор + опрос) ----------
+
+class SettingsPatch(BaseModel):
+    drop_threshold_pct: float | None = Field(None, gt=0, lt=100)
+    drop_window_hours: int | None = Field(None, gt=0, le=720)
+    drop_dedup_hours: int | None = Field(None, ge=0, le=168)
+    drop_min_points: int | None = Field(None, gt=0, le=1000)
+    poll_interval_seconds: int | None = Field(None, ge=60, le=86400)
+
+
+_SETTING_KEYS = ("drop_threshold_pct", "drop_window_hours",
+                 "drop_dedup_hours", "drop_min_points", "poll_interval_seconds")
+
+
+@app.get("/api/settings")
+def api_settings_get():
+    """Текущие effective-значения + источник для каждого (db|env)."""
+    with _db() as db:
+        result: dict = {"effective": {}, "sources": {}, "env": {}}
+        for k in _SETTING_KEYS:
+            env_val = getattr(settings, k)
+            result["env"][k] = env_val
+            row = db.execute("SELECT value FROM app_settings WHERE key = ?", (k,)).fetchone()
+            if row and row["value"]:
+                try:
+                    val = float(row["value"]) if k == "drop_threshold_pct" else int(row["value"])
+                    result["effective"][k] = val
+                    result["sources"][k] = "db"
+                    continue
+                except (ValueError, TypeError):
+                    pass
+            result["effective"][k] = env_val
+            result["sources"][k] = "env"
+    return result
+
+
+@app.post("/api/settings")
+async def api_settings_set(body: SettingsPatch):
+    """Сохраняет в app_settings только заданные поля. invalidate кэш."""
+    changed: list[str] = []
+    with _db() as db:
+        now = int(time.time())
+        for k in _SETTING_KEYS:
+            v = getattr(body, k)
+            if v is None:
+                continue
+            db.execute(
+                "INSERT INTO app_settings(key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                (k, str(v), now),
+            )
+            changed.append(k)
+        db.commit()
+    # сбрасываем кэш в worker'е тоже — он перечитает при следующем тике
+    from . import db as _dbmod
+    _dbmod.invalidate_settings_cache()
+    return {"ok": True, "changed": changed}
+
+
+@app.delete("/api/settings/{key}")
+def api_settings_reset(key: str):
+    """Сбросить override — вернуться к .env-дефолту для одного поля."""
+    if key not in _SETTING_KEYS:
+        raise HTTPException(400, "unknown key")
+    with _db() as db:
+        db.execute("DELETE FROM app_settings WHERE key = ?", (key,))
+        db.commit()
+    from . import db as _dbmod
+    _dbmod.invalidate_settings_cache()
+    return {"ok": True}
+
+
+@app.get("/api/settings/preview")
+def api_settings_preview(threshold_pct: float, window_hours: int, min_points: int = 6):
+    """Симуляция: за последние 7 дней сколько срабатываний детектора было бы
+    при заданных параметрах? Дешёвый SQL-проход."""
+    now = int(time.time())
+    week_start = now - 7 * 86400
+    with _db() as db:
+        rows = db.execute(
+            """SELECT nm_id, sale_price, ts FROM price_snapshots
+               WHERE ts >= ? AND sale_price IS NOT NULL
+               ORDER BY nm_id, ts""",
+            (week_start,),
+        ).fetchall()
+
+    # на каждый момент ts считаем медиану sale_price за предыдущие window_hours
+    # и проверяем условие. Грубо, но репрезентативно.
+    from collections import defaultdict
+    import statistics as _stats
+    series: dict[int, list[tuple[int, float]]] = defaultdict(list)
+    for r in rows:
+        series[r["nm_id"]].append((r["ts"], r["sale_price"]))
+
+    window_sec = window_hours * 3600
+    hits = 0
+    for nm, pts in series.items():
+        for i in range(len(pts)):
+            t_now, p_now = pts[i]
+            window = [p for (t, p) in pts[:i+1] if t >= t_now - window_sec]
+            if len(window) < min_points:
+                continue
+            med = _stats.median(window)
+            if med <= 0:
+                continue
+            if p_now <= med * (1 - threshold_pct / 100):
+                hits += 1
+                break  # один товар — одно срабатывание для симуляции
+    return {"would_alert": hits, "days_analyzed": 7, "nm_total": len(series)}
+
+
 # ---------- telegram bot ----------
 
 class BotTokenIn(BaseModel):
